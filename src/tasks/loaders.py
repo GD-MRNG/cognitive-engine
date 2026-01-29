@@ -1,4 +1,5 @@
 import glob
+import csv
 import os
 import logging
 from typing import Dict, Any
@@ -48,4 +49,61 @@ class DirectoryLoader(PipelineTask):
         context.set(output_key, loaded_data)
         logger.info(f"Loaded {len(loaded_data)} files into context key '{output_key}'.")
 
+        return context
+
+
+@register_task("ResearchCSVLoader")
+class ResearchCSVLoader(PipelineTask):
+    """
+    Parses a CSV file with columns: url, title, source, date.
+    Splits items into 'text_queue' (Web/YouTube/Txt) and 'audio_queue' (Mp3/M4a).
+    """
+
+    REQUIRED_COLUMNS = ["url", "title", "source", "date"]
+
+    def execute(
+        self, context: WorkflowContext, config: Dict[str, Any]
+    ) -> WorkflowContext:
+        input_file = config.get("input_file")
+        output_text_key = config.get("output_text_key", "text_queue")
+        output_audio_key = config.get("output_audio_key", "audio_queue")
+
+        if not os.path.exists(input_file):
+            raise FileNotFoundError(f"CSV file not found: {input_file}")
+
+        text_items = []
+        audio_items = []
+
+        with open(input_file, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+
+            # Validation
+            if not reader.fieldnames or not set(self.REQUIRED_COLUMNS).issubset(
+                set(reader.fieldnames)
+            ):
+                raise ValueError(
+                    f"CSV missing required columns: {self.REQUIRED_COLUMNS}"
+                )
+
+            for row in reader:
+                item = {k: v.strip() for k, v in row.items()}
+                url = item["url"].lower()
+
+                # Fix relative paths for local files
+                if not url.startswith("http") and not os.path.isabs(item["url"]):
+                    # Assuming paths are relative to the CSV location or CWD
+                    # For safety, let's assume they are relative to CWD
+                    item["url"] = os.path.abspath(item["url"])
+
+                # Classification
+                if url.endswith((".mp3", ".m4a", ".wav", ".flac")):
+                    audio_items.append(item)
+                else:
+                    text_items.append(item)
+
+        context.set(output_text_key, text_items)
+        context.set(output_audio_key, audio_items)
+        logger.info(
+            f"Loaded {len(text_items)} text items and {len(audio_items)} audio items."
+        )
         return context
