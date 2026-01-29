@@ -53,3 +53,24 @@ class TextAggregator(PipelineTask):
             logger.info(f"Saved combined text to {save_path}")
 
         return context
+
+
+@register_task("CitationCompilerTask")
+class CitationCompilerTask(PipelineTask):
+    def execute(
+        self, context: WorkflowContext, config: Dict[str, Any]
+    ) -> WorkflowContext:
+        docs = context.require(config.get("input_key"))
+        lines = ["## Sources"]
+
+        for i, doc in enumerate(docs):
+            title = doc.get("title", "Unknown Title")
+            source = doc.get("source", "Unknown Source")
+            date = doc.get("date", "Unknown Date")
+            url = doc.get("url", "#")
+
+            # Format: 1. [Title](Link), Source, Date
+            lines.append(f"{i+1}. [{title}]({url}), {source}, {date}")
+
+        context.set(config.get("output_key"), "\n".join(lines))
+        return context
