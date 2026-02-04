@@ -27,10 +27,6 @@ class MockLLMClient(BaseLLMClient):
 
 
 class ProductionLLMClient(BaseLLMClient):
-    """
-    The real client supporting Poe (via OpenAI protocol) and local Ollama.
-    """
-
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.provider = config.get("provider", "poe").lower()
@@ -128,9 +124,6 @@ class ProductionLLMClient(BaseLLMClient):
 
 
 def get_llm_client(config: Dict[str, Any]) -> BaseLLMClient:
-    """
-    Factory: Returns Mock or Production client based on config.
-    """
     # Check if 'mock' is explicitly requested in the step config
     if config.get("provider") == "mock":
         return MockLLMClient()
