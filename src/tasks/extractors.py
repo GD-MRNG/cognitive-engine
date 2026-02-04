@@ -4,6 +4,12 @@ from src.core.interfaces import PipelineTask
 from src.core.context import WorkflowContext
 from src.core.registry import register_task
 from src.utils.web import ContentExtractor
+from src.utils.youtube import YouTubeHandler
+
+import os
+import json
+from datetime import datetime
+
 
 logger = logging.getLogger(__name__)
 
@@ -125,3 +131,90 @@ class ManualReviewTask(PipelineTask):
 
         context.set(output_success_key, success_docs)
         return context
+
+
+@register_task("BreadthScanExtractionTask")
+class BreadthScanExtractionTask(PipelineTask):
+    """
+    Standardized Breadth-First Content Extractor.
+    """
+
+    def execute(self, context: WorkflowContext, config: Dict[str, Any]) -> None:
+        sources = context.get(config.get("input_key", "source_registry"), [])
+        # Filter for datapoints (Breadth)
+        datapoints = [s for s in sources if s.get("type") == "datapoint"]
+
+        checkpoint_path = config.get(
+            "checkpoint_json", "checkpoints/breadth_state.json"
+        )
+        report_path = config.get("report_md", "outputs/breadth_report.md")
+
+        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+        os.makedirs(os.path.dirname(report_path), exist_ok=True)
+
+        # Resilience: Load existing state to support restarts
+        data_state = self._load_checkpoint(checkpoint_path)
+        logger.info(
+            f"BreadthScout: Processing {len(datapoints)} sources. {len(data_state)} already completed."
+        )
+
+        for source in datapoints:
+            s_id = source["id"]
+            if s_id in data_state:
+                continue
+
+            logger.info(f"Scanning Breadth: {source['name']} ({source['url']})")
+
+            # Polymorphic Fetching
+            raw_data = ""
+            if source.get("format") == "youtube":
+                handler = YouTubeHandler()
+                titles = handler.get_recent_titles(channel_url=source["url"], days=7)
+                raw_data = "\n".join(titles) if titles else "No recent videos found."
+            else:
+                extractor = ContentExtractor(headless=True)
+                try:
+                    raw_data = extractor.extract(source["url"])
+                except Exception as e:
+                    logger.error(f"Web extraction failed for {source['name']}: {e}")
+                    raw_data = "Web extraction failed.\n"
+
+            if raw_data:
+                # Wrap in Source Tags for LLM Context clarity
+                tagged_content = (
+                    f"<source id='{s_id}' name='{source['name']}' url='{source['url']}'>\n"
+                    f"{raw_data}\n"
+                    f"</source>"
+                )
+
+                # Incremental Persistence
+                data_state[s_id] = {
+                    "metadata": source,
+                    "content": tagged_content,
+                    "timestamp": datetime.now().isoformat(),
+                }
+                self._save_checkpoint(data_state, checkpoint_path)
+
+        self._generate_md_report(data_state, report_path)
+
+    def _load_checkpoint(self, path: str) -> Dict:
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        return {}
+
+    def _save_checkpoint(self, state: Dict, path: str) -> None:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+
+    def _generate_md_report(self, data_state: Dict, path: str) -> None:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(
+                f"# Breadth Scan Extraction Report: {datetime.now().strftime('%Y-%m-%d')}\n\n"
+            )
+            for s_id, entry in data_state.items():
+                f.write(f"## {entry['metadata']['name']}\n")
+                f.write(
+                    f"**Format:** {entry['metadata']['format']} | **Rank:** {entry['metadata']['rank']}\n\n"
+                )
+                f.write(f"{entry['content']}\n\n---\n\n")

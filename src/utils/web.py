@@ -8,8 +8,6 @@ from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
-from src.utils.youtube import YouTubeHandler
-
 logger = logging.getLogger(__name__)
 
 
@@ -28,7 +26,6 @@ class ContentExtractor:
         self.headless = headless
         self.driver = None
         self.request_count = 0
-        self.yt_handler = YouTubeHandler()
 
         # --- Centralized Retry Configuration ---
 

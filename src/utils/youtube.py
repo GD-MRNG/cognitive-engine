@@ -1,13 +1,17 @@
 import logging
 import os
 import re
-from typing import Optional, Any
+from datetime import datetime, timedelta, timezone
+from dateutil import parser as date_parser
+from typing import Optional, List, Any
 import requests
 from youtube_transcript_api import (
     YouTubeTranscriptApi,
     TranscriptsDisabled,
     NoTranscriptFound,
 )
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -17,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 class YouTubeHandler:
     """
-    Handles fetching YouTube transcript data via multiple strategies:
+    Handles fetching YouTube transcript and title data via multiple strategies:
     1. Paid API (youtube-transcript.io)
     2. Free API (youtube-transcript-api)
     3. Selenium Automation (Tactiq.io)
@@ -28,6 +32,76 @@ class YouTubeHandler:
 
     def __init__(self):
         self.paid_api_key = os.getenv("YOUTUBE_TRANSCRIPT_API_KEY")
+        self.google_data_api_key = os.getenv("GOOGLE_DATA_API_KEY")
+
+    def get_recent_titles(self, channel_url: str, days: int = 7) -> List[str]:
+        """
+        Fetches video titles published within a specific window (default 7 days).
+        Uses the Google YouTube Data API v3.
+        """
+        if not self.google_data_api_key:
+            logger.error("Google Data API Key is required for fetching titles.")
+            return []
+
+        # 1. Extract Handle
+        handle_match = re.search(r"youtube\.com/(@[A-Za-z0-9_.-]+)", channel_url)
+        if not handle_match:
+            logger.error(f"Could not extract handle from URL: {channel_url}")
+            return []
+        handle = handle_match.group(1)
+
+        try:
+            service = build("youtube", "v3", developerKey=self.google_data_api_key)
+
+            # 2. Resolve Handle to Channel ID
+            search_res = (
+                service.search()
+                .list(q=handle, part="id", type="channel", maxResults=1)
+                .execute()
+            )
+
+            if not search_res.get("items"):
+                logger.error(f"Channel ID not found for handle: {handle}")
+                return []
+
+            channel_id = search_res["items"][0]["id"]["channelId"]
+
+            # 3. Get the 'Uploads' Playlist ID
+            channel_res = (
+                service.channels().list(id=channel_id, part="contentDetails").execute()
+            )
+
+            uploads_id = channel_res["items"][0]["contentDetails"]["relatedPlaylists"][
+                "uploads"
+            ]
+
+            # 4. Fetch Items from Playlist
+            one_week_ago = datetime.now(timezone.utc) - timedelta(days=days)
+            playlist_res = (
+                service.playlistItems()
+                .list(playlistId=uploads_id, part="snippet", maxResults=50)
+                .execute()
+            )
+
+            titles = []
+            for item in playlist_res.get("items", []):
+                snippet = item["snippet"]
+                published = date_parser.isoparse(snippet["publishedAt"])
+
+                if published >= one_week_ago:
+                    titles.append(snippet["title"])
+
+            logger.info(
+                f"Successfully fetched {len(titles)} titles for handle {handle}"
+            )
+            return titles
+
+        except HttpError as e:
+            logger.error(f"YouTube API Error: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error fetching titles: {e}")
+            return []
 
     def get_transcript_paid(self, video_id: str) -> Optional[str]:
         """

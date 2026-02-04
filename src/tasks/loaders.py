@@ -2,6 +2,7 @@ import glob
 import csv
 import os
 import logging
+import pandas as pd
 from typing import Dict, Any
 
 from src.core.interfaces import PipelineTask
@@ -107,3 +108,61 @@ class ResearchCSVLoader(PipelineTask):
             f"Loaded {len(text_items)} text items and {len(audio_items)} audio items."
         )
         return context
+
+
+@register_task("SourceCSVLoader")
+class SourceCSVLoader(PipelineTask):
+    """
+    Standardized Source Loader.
+    """
+
+    def execute(self, context: WorkflowContext, config: Dict[str, Any]) -> None:
+        file_path = config.get("input_file")
+        filter_tag = config.get("filter_tag")
+
+        # Ranking Logic Config
+        top_priority = config.get("top_priority_value", 1)
+        rank_cutoff = config.get("rank_cutoff", 5)
+
+        # Source Type Priority
+        type_order = config.get("type_priority", ["datapoint", "analysis"])
+
+        output_key = config.get("output_key", "source_registry")
+
+        if not file_path:
+            raise ValueError("SourceRegistryLoader: 'input_file' is missing.")
+
+        df = pd.read_csv(file_path)
+
+        # Pre-processing & Normalization
+        df["tags"] = (
+            df["tags"].fillna("").apply(lambda x: [t.strip() for t in x.split(",")])
+        )
+        df["rank"] = pd.to_numeric(df["rank"], errors="coerce").fillna(rank_cutoff)
+
+        # Filtering
+        if top_priority < rank_cutoff:
+            mask = (df["rank"] >= top_priority) & (df["rank"] <= rank_cutoff)
+        else:
+            mask = (df["rank"] <= top_priority) & (df["rank"] >= rank_cutoff)
+
+        if filter_tag:
+            mask &= df["tags"].apply(lambda x: filter_tag in x)
+
+        df = df[mask].copy()
+
+        # First: Sort by 'type' based on the type_order list
+        df["type"] = pd.Categorical(df["type"], categories=type_order, ordered=True)
+
+        # Second: Sort by 'rank' (1 is usually processed before 5)
+        ascending_rank = top_priority < rank_cutoff
+
+        df = df.sort_values(by=["type", "rank"], ascending=[True, ascending_rank])
+
+        # Final Context Update
+        sources = df.to_dict("records")
+        context.set(output_key, sources)
+
+        logger.info(
+            f"Registry Loaded: {len(sources)} sources prioritized by {type_order}"
+        )
