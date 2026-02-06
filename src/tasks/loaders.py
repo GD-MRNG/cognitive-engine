@@ -114,55 +114,88 @@ class ResearchCSVLoader(PipelineTask):
 class SourceCSVLoader(PipelineTask):
     """
     Standardized Source Loader.
+    Reads a CSV, filters by tag/rank, and sorts by Type Priority + Rank.
     """
 
-    def execute(self, context: WorkflowContext, config: Dict[str, Any]) -> None:
+    def execute(
+        self, context: WorkflowContext, config: Dict[str, Any]
+    ) -> WorkflowContext:
         file_path = config.get("input_file")
         filter_tag = config.get("filter_tag")
 
-        # Ranking Logic Config
+        # Ranking Config
         top_priority = config.get("top_priority_value", 1)
         rank_cutoff = config.get("rank_cutoff", 5)
 
-        # Source Type Priority
+        # Source Priority
         type_order = config.get("type_priority", ["datapoint", "analysis"])
 
         output_key = config.get("output_key", "source_registry")
 
+        # 1. Validation
         if not file_path:
-            raise ValueError("SourceRegistryLoader: 'input_file' is missing.")
+            raise ValueError("SourceCSVLoader: 'input_file' config is missing.")
 
-        df = pd.read_csv(file_path)
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"SourceCSVLoader: File not found at {file_path}")
 
-        # Pre-processing & Normalization
+        # 2. Load
+        try:
+            df = pd.read_csv(file_path)
+        except Exception as e:
+            raise RuntimeError(f"Failed to parse CSV: {e}")
+
+        # 3. Pre-processing
+        # Ensure tags are a list, handling NaNs
         df["tags"] = (
-            df["tags"].fillna("").apply(lambda x: [t.strip() for t in x.split(",")])
+            df["tags"]
+            .fillna("")
+            .astype(str)
+            .apply(lambda x: [t.strip() for t in x.split(",") if t.strip()])
         )
+
+        # Ensure rank is numeric, default to cutoff (lowest priority) if missing
         df["rank"] = pd.to_numeric(df["rank"], errors="coerce").fillna(rank_cutoff)
 
-        # Filtering
+        # 4. Filtering
+        # Rank Logic: Supports 1->5 (Ascending) or 5->1 (Descending)
         if top_priority < rank_cutoff:
             mask = (df["rank"] >= top_priority) & (df["rank"] <= rank_cutoff)
+            ascending_rank = True
         else:
             mask = (df["rank"] <= top_priority) & (df["rank"] >= rank_cutoff)
+            ascending_rank = False
 
         if filter_tag:
-            mask &= df["tags"].apply(lambda x: filter_tag in x)
+            # Check if filter_tag exists in the list column
+            mask &= df["tags"].apply(lambda tags: filter_tag in tags)
 
         df = df[mask].copy()
 
-        # First: Sort by 'type' based on the type_order list
-        df["type"] = pd.Categorical(df["type"], categories=type_order, ordered=True)
+        if df.empty:
+            logger.warning(
+                f"SourceCSVLoader: Filters resulted in 0 items. (Tag: {filter_tag})"
+            )
+            context.set(output_key, [])
+            return context
 
-        # Second: Sort by 'rank' (1 is usually processed before 5)
-        ascending_rank = top_priority < rank_cutoff
+        # 5. Sorting (Non-Destructive)
+        # We create a temporary categorical column just for sorting index
+        # Any type NOT in type_order gets a code of -1 (or similar) and drops to bottom
+        df["_sort_type"] = pd.Categorical(
+            df["type"], categories=type_order, ordered=True
+        )
 
-        df = df.sort_values(by=["type", "rank"], ascending=[True, ascending_rank])
+        # Sort by Type (custom order) -> Rank
+        df = df.sort_values(by=["_sort_type", "rank"], ascending=[True, ascending_rank])
 
-        # Final Context Update
+        # Cleanup helper column
+        df.drop(columns=["_sort_type"], inplace=True)
+
+        # 6. Finalize
         sources = df.to_dict("records")
         context.set(output_key, sources)
 
-        logger.info(
-            f"Registry Loaded: {len(sources)} sources prioritized by {type_order}"
-        )
+        logger.info(f"Registry Loaded: {len(sources)} sources from {file_path}")
+
+        return context

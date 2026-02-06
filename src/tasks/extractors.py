@@ -1,3 +1,6 @@
+import os
+import json
+from datetime import datetime
 import logging
 from typing import Dict, Any
 from src.core.interfaces import PipelineTask
@@ -5,11 +8,7 @@ from src.core.context import WorkflowContext
 from src.core.registry import register_task
 from src.utils.web import ContentExtractor
 from src.utils.youtube import YouTubeHandler
-
-import os
-import json
-from datetime import datetime
-
+from src.utils.formatting import MarkdownFormatter as MDF
 
 logger = logging.getLogger(__name__)
 
@@ -133,37 +132,56 @@ class ManualReviewTask(PipelineTask):
         return context
 
 
-@register_task("BreadthScanExtractionTask")
-class BreadthScanExtractionTask(PipelineTask):
+@register_task("SourceScannerTask")
+class SourceScannerTask(PipelineTask):
     """
-    Standardized Breadth-First Content Extractor.
+    Scans a list of sources (URLs) to fetch a preview of their content.
+    Generates a Markdown report and maintains a state file to avoid re-scanning.
     """
 
     def execute(self, context: WorkflowContext, config: Dict[str, Any]) -> None:
+        # Load Sources
         sources = context.get(config.get("input_key", "source_registry"), [])
-        # Filter for datapoints (Breadth)
-        datapoints = [s for s in sources if s.get("type") == "datapoint"]
 
-        checkpoint_path = config.get(
-            "checkpoint_json", "checkpoints/breadth_state.json"
-        )
-        report_path = config.get("report_md", "outputs/breadth_report.md")
+        # Apply Configurable Filtering
+        # If 'target_types' is defined in config, strictly filter by them.
+        # Otherwise, process ALL sources provided by the loader.
+        target_types = config.get("target_types")
+        if target_types:
+            items_to_scan = [s for s in sources if s.get("type") in target_types]
+            logger.info(
+                f"SourceScanner: Filtered for types {target_types}. Found {len(items_to_scan)} items."
+            )
+        else:
+            items_to_scan = sources
+            logger.info(
+                f"SourceScanner: No type filter applied. Scanning all {len(items_to_scan)} sources."
+            )
+
+        # Setup Paths
+        checkpoint_path = config.get("checkpoint_json", "checkpoints/scan_state.json")
+        report_path = config.get("report_md", "outputs/scan_report.md")
 
         os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
         os.makedirs(os.path.dirname(report_path), exist_ok=True)
 
-        # Resilience: Load existing state to support restarts
-        data_state = self._load_checkpoint(checkpoint_path)
-        logger.info(
-            f"BreadthScout: Processing {len(datapoints)} sources. {len(data_state)} already completed."
-        )
+        # Capture the total count
+        total_sources = len(items_to_scan)
 
-        for source in datapoints:
-            s_id = source["id"]
+        # Load State & Execute
+        data_state = self._load_checkpoint(checkpoint_path)
+
+        for i, source in enumerate(items_to_scan, start=1):
+            logger.info(
+                f"Working on source [{i}/{total_sources}]: {source.get('name', 'Unknown')}"
+            )
+
+            s_id = str(source["id"])  # Cast to str ensures matching against JSON keys
             if s_id in data_state:
+                logger.info("   -> Skipping (Already Scanned)")
                 continue
 
-            logger.info(f"Scanning Breadth: {source['name']} ({source['url']})")
+            logger.info(f"Scanning: {source['name']} ({source['url']})")
 
             # Polymorphic Fetching
             raw_data = ""
@@ -180,14 +198,12 @@ class BreadthScanExtractionTask(PipelineTask):
                     raw_data = "Web extraction failed.\n"
 
             if raw_data:
-                # Wrap in Source Tags for LLM Context clarity
                 tagged_content = (
                     f"<source id='{s_id}' name='{source['name']}' url='{source['url']}'>\n"
                     f"{raw_data}\n"
                     f"</source>"
                 )
 
-                # Incremental Persistence
                 data_state[s_id] = {
                     "metadata": source,
                     "content": tagged_content,
@@ -195,7 +211,22 @@ class BreadthScanExtractionTask(PipelineTask):
                 }
                 self._save_checkpoint(data_state, checkpoint_path)
 
+        # Generate Report (Disk)
         self._generate_md_report(data_state, report_path)
+
+        # Aggregate content for the next task (Memory)
+        # We combine all content into one big string for the LLM
+        aggregated_text = []
+        for s_id, entry in data_state.items():
+            meta = entry["metadata"]
+            content = entry["content"]
+            aggregated_text.append(f"## Source: {meta['name']}\n{content}")
+
+        # Save to context so LLMTransformTask can find it
+        output_key = config.get("output_key", "scanned_content_blob")
+        context.set(output_key, "\n\n".join(aggregated_text))
+
+        return context
 
     def _load_checkpoint(self, path: str) -> Dict:
         if os.path.exists(path):
@@ -208,13 +239,36 @@ class BreadthScanExtractionTask(PipelineTask):
             json.dump(state, f, indent=2)
 
     def _generate_md_report(self, data_state: Dict, path: str) -> None:
+        """
+        Generates a clean markdown report using the MarkdownFormatter.
+        Wraps bulky source content in collapsible dropdowns.
+        """
+        sections = []
+
+        # Header
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        sections.append(MDF.h1(f"Source Scan Report: {date_str}"))
+        sections.append(f"**Total Sources Scanned:** {len(data_state)}\n")
+
+        # Iterate through sources
+        for s_id, entry in data_state.items():
+            meta = entry["metadata"]
+
+            # Create a descriptive title for the dropdown summary
+            # e.g., "TechCrunch (Type: news_site | Rank: 1)"
+            source_name = meta.get("name", "Unknown Source")
+            source_type = meta.get("type", "N/A")
+            source_rank = meta.get("rank", "N/A")
+
+            title = f"{source_name} (Type: {source_type} | Rank: {source_rank})"
+
+            # The content is the raw tagged XML string
+            raw_content = entry["content"]
+
+            # Wrap in dropdown
+            dropdown = MDF.create_dropdown(title, raw_content)
+            sections.append(dropdown)
+
+        # Write to file
         with open(path, "w", encoding="utf-8") as f:
-            f.write(
-                f"# Breadth Scan Extraction Report: {datetime.now().strftime('%Y-%m-%d')}\n\n"
-            )
-            for s_id, entry in data_state.items():
-                f.write(f"## {entry['metadata']['name']}\n")
-                f.write(
-                    f"**Format:** {entry['metadata']['format']} | **Rank:** {entry['metadata']['rank']}\n\n"
-                )
-                f.write(f"{entry['content']}\n\n---\n\n")
+            f.write("\n\n".join(sections))

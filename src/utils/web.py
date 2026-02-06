@@ -7,6 +7,7 @@ from selenium import webdriver
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
+from src.utils.youtube import YouTubeHandler
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 class ContentExtractor:
     """
     The Unified Extractor.
-    - Handles Web (Selenium + BS4 Clean)
+    - Handles Web (Legacy One-and-Done Strategy for Stability)
     - Handles YouTube (Paid -> Free -> Tactiq -> Manual Failover)
     - Manages Memory (Driver Rotation)
     - Centralized Retry Configuration
@@ -38,7 +39,29 @@ class ContentExtractor:
 
     # --- Driver Lifecycle ---
 
+    def _create_fresh_driver(self):
+        """
+        Creates a standalone driver instance.
+        Used for the 'One-and-Done' legacy strategy.
+        """
+        options = FirefoxOptions()
+        if self.headless:
+            options.add_argument("--headless")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+
+        # Disable caching to minimize disk/ram usage during the short life of this driver
+        options.set_preference("browser.cache.disk.enable", False)
+        options.set_preference("browser.cache.memory.enable", False)
+        options.set_preference("browser.cache.offline.enable", False)
+        options.set_preference("network.http.use-cache", False)
+
+        return webdriver.Firefox(options=options)
+
     def _init_driver(self):
+        """
+        Initializes the persistent class-level driver (used for YouTube/Tactiq).
+        """
         if self.driver:
             try:
                 self.driver.quit()
@@ -46,17 +69,14 @@ class ContentExtractor:
                 pass
 
         logger.info(f"Initializing Firefox WebDriver (Headless: {self.headless})...")
-        options = FirefoxOptions()
-        if self.headless:
-            options.add_argument("--headless")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-
-        self.driver = webdriver.Firefox(options=options)
+        self.driver = self._create_fresh_driver()
         self.request_count = 0
         return self.driver
 
     def _get_driver(self):
+        """
+        Retrieves the persistent driver, rotating it if threshold is reached.
+        """
         if self.driver is None or self.request_count >= self.DRIVER_RESET_THRESHOLD:
             self._init_driver()
         return self.driver
@@ -132,13 +152,15 @@ class ContentExtractor:
     # --- Extraction Strategies ---
 
     def _extract_youtube(self, url: str) -> str:
-        video_id = self.yt_handler.extract_video_id(url)
+        handler = YouTubeHandler()
+
+        video_id = handler.extract_video_id(url)
         if not video_id:
             raise ValueError("Invalid YouTube URL")
 
-        # # Tier 0: Paid API
+        # Tier 0: Paid API
         for attempt in range(self.max_retries + 1):
-            text = self.yt_handler.get_transcript_paid(video_id)
+            text = handler.get_transcript_paid(video_id)
             if text:
                 logger.info(
                     f"YouTube extraction success (Tier 0: Paid API, Attempt {attempt+1})"
@@ -150,10 +172,10 @@ class ContentExtractor:
 
         # Tier 1: Free API
         for attempt in range(self.max_retries + 1):
-            text = self.yt_handler.get_transcript_free(video_id)
+            text = handler.get_transcript_free(video_id)
             if text:
                 logger.info(
-                    f"YouTube extraction success (Tier 2: Free API, Attempt {attempt+1})"
+                    f"YouTube extraction success (Tier 1: Free API, Attempt {attempt+1})"
                 )
                 return f"Source: YouTube (Free API)\n\n{text}"
 
@@ -161,13 +183,14 @@ class ContentExtractor:
                 time.sleep(self._get_delay(attempt))
 
         # Tier 2: Selenium Tactiq
+        # Uses the persistent driver because Tactiq might need cookies/extensions or state
         for attempt in range(self.max_retries + 1):
             try:
                 driver = self._get_driver()
-                text = self.yt_handler.get_transcript_tactiq(driver, url)
+                text = handler.get_transcript_tactiq(driver, url)
                 if text:
                     logger.info(
-                        f"YouTube extraction success (Tier 1: Tactiq, Attempt {attempt+1})"
+                        f"YouTube extraction success (Tier 2: Tactiq, Attempt {attempt+1})"
                     )
                     return f"Source: YouTube (Tactiq)\n\n{text}"
             except Exception as e:
@@ -177,21 +200,28 @@ class ContentExtractor:
             if attempt < self.max_retries:
                 time.sleep(self._get_delay(attempt))
 
-        # This ensures the Task catches it and moves the item to the Failed queue.
         raise RuntimeError("YouTube Automated Extraction Failed (All Tiers).")
 
     def _extract_web(self, url: str) -> str:
         """
-        Extracts webpage content using Selenium + BS4.
+        Extracts webpage content using the Legacy 'One-and-Done' strategy.
+        Creates a fresh driver for this specific URL and destroys it immediately.
         """
         for attempt in range(self.max_retries + 1):
+            driver = None  # Local scope driver
             try:
                 if attempt > 0:
                     logger.info(
                         f"Webpage Retry {attempt + 1}/{self.max_retries + 1}..."
                     )
 
-                driver = self._get_driver()
+                # Initialize FRESH driver for this single request
+                logger.info(f"Spinning up fresh driver for: {url}")
+                driver = self._create_fresh_driver()
+
+                # Set a strict page load timeout to prevent hangs
+                driver.set_page_load_timeout(30)
+
                 driver.get(url)
 
                 WebDriverWait(driver, 20).until(
@@ -207,10 +237,19 @@ class ContentExtractor:
 
             except Exception as e:
                 logger.warning(f"Webpage attempt {attempt + 1} failed: {e}")
-                self._init_driver()
+                # No need to call self._init_driver() here because we are using a local 'driver'
+
+            finally:
+                # IMMEDIATE CLEANUP
+                # This guarantees the process is killed before we move to the next URL/Attempt
+                if driver:
+                    try:
+                        driver.quit()
+                        logger.debug("Disposable driver closed.")
+                    except Exception as e:
+                        logger.error(f"Error closing disposable driver: {e}")
 
             if attempt < self.max_retries:
                 time.sleep(self._get_delay(attempt))
 
-        # This ensures the Task catches it and moves the item to the Failed queue.
         raise RuntimeError(f"All webpage extraction attempts failed for {url}")
