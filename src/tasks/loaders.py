@@ -113,89 +113,75 @@ class ResearchCSVLoader(PipelineTask):
 @register_task("SourceCSVLoader")
 class SourceCSVLoader(PipelineTask):
     """
-    Standardized Source Loader.
-    Reads a CSV, filters by tag/rank, and sorts by Type Priority + Rank.
+    Loads a sources.csv into the Context.
+    Schema: id, name, url, type, rank, tags, format
     """
 
     def execute(
         self, context: WorkflowContext, config: Dict[str, Any]
     ) -> WorkflowContext:
         file_path = config.get("input_file")
+        output_key = config.get("output_key", "raw_sources")
+
+        # Filtering Options
         filter_tag = config.get("filter_tag")
+        filter_type = config.get("filter_type")  # e.g. "datapoint" or "analysis"
 
-        # Ranking Config
-        top_priority = config.get("top_priority_value", 1)
-        rank_cutoff = config.get("rank_cutoff", 5)
-
-        # Source Priority
-        type_order = config.get("type_priority", ["datapoint", "analysis"])
-
-        output_key = config.get("output_key", "source_registry")
-
-        # 1. Validation
+        # validation
         if not file_path:
             raise ValueError("SourceCSVLoader: 'input_file' config is missing.")
-
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"SourceCSVLoader: File not found at {file_path}")
 
-        # 2. Load
         try:
             df = pd.read_csv(file_path)
+            logger.info(f"Loaded CSV with columns: {list(df.columns)}")
         except Exception as e:
             raise RuntimeError(f"Failed to parse CSV: {e}")
 
-        # 3. Pre-processing
+        # 1. Normalize Legacy Columns
         # Ensure tags are a list, handling NaNs
-        df["tags"] = (
-            df["tags"]
-            .fillna("")
-            .astype(str)
-            .apply(lambda x: [t.strip() for t in x.split(",") if t.strip()])
-        )
-
-        # Ensure rank is numeric, default to cutoff (lowest priority) if missing
-        df["rank"] = pd.to_numeric(df["rank"], errors="coerce").fillna(rank_cutoff)
-
-        # 4. Filtering
-        # Rank Logic: Supports 1->5 (Ascending) or 5->1 (Descending)
-        if top_priority < rank_cutoff:
-            mask = (df["rank"] >= top_priority) & (df["rank"] <= rank_cutoff)
-            ascending_rank = True
+        if "tags" in df.columns:
+            df["tags"] = (
+                df["tags"]
+                .fillna("")
+                .astype(str)
+                .apply(lambda x: [t.strip() for t in x.split(",") if t.strip()])
+            )
         else:
-            mask = (df["rank"] <= top_priority) & (df["rank"] >= rank_cutoff)
-            ascending_rank = False
+            df["tags"] = [[] for _ in range(len(df))]
 
+        # Ensure rank is numeric, default to 999 (lowest priority)
+        if "rank" in df.columns:
+            df["rank"] = pd.to_numeric(df["rank"], errors="coerce").fillna(999)
+        else:
+            df["rank"] = 999
+
+        # Ensure other critical fields exist
+        required_fields = ["id", "name", "url", "type", "format"]
+        for field in required_fields:
+            if field not in df.columns:
+                df[field] = ""  # Fill missing schema fields with empty string
+
+        # 2. Filtering
         if filter_tag:
             # Check if filter_tag exists in the list column
-            mask &= df["tags"].apply(lambda tags: filter_tag in tags)
+            df = df[df["tags"].apply(lambda tags: filter_tag in tags)]
 
-        df = df[mask].copy()
+        if filter_type:
+            df = df[df["type"].astype(str).str.lower() == filter_type.lower()]
 
         if df.empty:
-            logger.warning(
-                f"SourceCSVLoader: Filters resulted in 0 items. (Tag: {filter_tag})"
-            )
+            logger.warning("SourceCSVLoader: Filters resulted in 0 items.")
             context.set(output_key, [])
             return context
 
-        # 5. Sorting (Non-Destructive)
-        # We create a temporary categorical column just for sorting index
-        # Any type NOT in type_order gets a code of -1 (or similar) and drops to bottom
-        df["_sort_type"] = pd.Categorical(
-            df["type"], categories=type_order, ordered=True
-        )
+        # 3. Sorting (Rank Ascending = 1 is highest priority)
+        df = df.sort_values(by=["rank"], ascending=True)
 
-        # Sort by Type (custom order) -> Rank
-        df = df.sort_values(by=["_sort_type", "rank"], ascending=[True, ascending_rank])
-
-        # Cleanup helper column
-        df.drop(columns=["_sort_type"], inplace=True)
-
-        # 6. Finalize
+        # 4. Finalize
         sources = df.to_dict("records")
         context.set(output_key, sources)
 
-        logger.info(f"Registry Loaded: {len(sources)} sources from {file_path}")
-
+        logger.info(f"Loaded {len(sources)} sources into key '{output_key}'")
         return context
