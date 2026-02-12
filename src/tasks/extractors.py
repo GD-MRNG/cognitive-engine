@@ -8,7 +8,6 @@ from src.core.context import WorkflowContext
 from src.core.registry import register_task
 from src.utils.web import ContentExtractor
 from src.utils.youtube import YouTubeHandler
-from src.utils.formatting import MarkdownFormatter as MDF
 
 logger = logging.getLogger(__name__)
 
@@ -132,143 +131,143 @@ class ManualReviewTask(PipelineTask):
         return context
 
 
-@register_task("SourceScannerTask")
-class SourceScannerTask(PipelineTask):
+@register_task("BreadthGatheringTask")
+class BreadthGatheringTask(PipelineTask):
     """
-    Scans a list of sources (URLs) to fetch a preview of their content.
-    Generates a Markdown report and maintains a state file to avoid re-scanning.
+    Automated Breadth Scan.
+    Iterates through 'datapoint' sources.
+    - If format='youtube': Fetches recent video titles (Headlines).
+    - If format='webpage': Scrapes full page content.
+
+    Updates the 'Golden Artifact' (research.json) under a specific top-level key
+    (e.g., 'breadth_scan'), preserving existing data.
     """
 
-    def execute(self, context: WorkflowContext, config: Dict[str, Any]) -> None:
-        # Load Sources
-        sources = context.get(config.get("input_key", "source_registry"), [])
+    def execute(
+        self, context: WorkflowContext, config: Dict[str, Any]
+    ) -> WorkflowContext:
+        input_key = config.get("input_key", "raw_sources")
+        output_key = config.get("output_key", "breadth_scan")
+        checkpoint_file = config.get("checkpoint_file", "outputs/research.json")
 
-        # Apply Configurable Filtering
-        # If 'target_types' is defined in config, strictly filter by them.
-        # Otherwise, process ALL sources provided by the loader.
-        target_types = config.get("target_types")
-        if target_types:
-            items_to_scan = [s for s in sources if s.get("type") in target_types]
-            logger.info(
-                f"SourceScanner: Filtered for types {target_types}. Found {len(items_to_scan)} items."
+        # 1. Load Sources from Context
+        all_sources = context.get(input_key, [])
+        datapoint_sources = [s for s in all_sources if s.get("type") == "datapoint"]
+
+        if not datapoint_sources:
+            logger.warning(
+                "BreadthGatheringTask: No sources with type='datapoint' found."
             )
-        else:
-            items_to_scan = sources
-            logger.info(
-                f"SourceScanner: No type filter applied. Scanning all {len(items_to_scan)} sources."
-            )
+            # Initialize empty list in context to prevent downstream errors
+            context.set(output_key, [])
+            return context
 
-        # Setup Paths
-        checkpoint_path = config.get("checkpoint_json", "checkpoints/scan_state.json")
-        report_path = config.get("report_md", "outputs/scan_report.md")
+        logger.info(
+            f"BreadthGatheringTask: Processing {len(datapoint_sources)} datapoint sources."
+        )
 
-        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-        os.makedirs(os.path.dirname(report_path), exist_ok=True)
+        # 2. Load Checkpoint State
+        artifact_state = self._load_checkpoint_dict(checkpoint_file)
 
-        # Capture the total count
-        total_sources = len(items_to_scan)
+        # Get the specific list we are working on (e.g., 'breadth_scan')
+        current_list = artifact_state.get(output_key, [])
 
-        # Load State & Execute
-        data_state = self._load_checkpoint(checkpoint_path)
+        # Map URL to existing item for quick lookup
+        existing_urls = {
+            item.get("url"): item for item in current_list if item.get("url")
+        }
 
-        for i, source in enumerate(items_to_scan, start=1):
-            logger.info(
-                f"Working on source [{i}/{total_sources}]: {source.get('name', 'Unknown')}"
-            )
+        # Rebuild the list in source order
+        final_data_list = []
 
-            s_id = str(source["id"])  # Cast to str ensures matching against JSON keys
-            if s_id in data_state:
-                logger.info("   -> Skipping (Already Scanned)")
-                continue
+        # Initialize Handlers
+        extractor = ContentExtractor(headless=True)
+        yt_handler = YouTubeHandler()
 
-            logger.info(f"Scanning: {source['name']} ({source['url']})")
+        try:
+            for i, source in enumerate(datapoint_sources):
+                url = source.get("url")
+                name = source.get("name")
+                fmt = source.get("format", "webpage")
 
-            # Polymorphic Fetching
-            raw_data = ""
-            if source.get("format") == "youtube":
-                handler = YouTubeHandler()
-                titles = handler.get_recent_titles(channel_url=source["url"], days=7)
-                raw_data = "\n".join(titles) if titles else "No recent videos found."
-            else:
-                extractor = ContentExtractor(headless=True)
-                try:
-                    raw_data = extractor.extract(source["url"])
-                except Exception as e:
-                    logger.error(f"Web extraction failed for {source['name']}: {e}")
-                    raw_data = "Web extraction failed.\n"
+                # Resume Logic: Skip if already processed
+                if url in existing_urls:
+                    logger.info(
+                        f"[{i+1}/{len(datapoint_sources)}] Skipping (Already Scanned): {name}"
+                    )
+                    final_data_list.append(existing_urls[url])
+                    continue
 
-            if raw_data:
-                tagged_content = (
-                    f"<source id='{s_id}' name='{source['name']}' url='{source['url']}'>\n"
-                    f"{raw_data}\n"
-                    f"</source>"
+                logger.info(
+                    f"[{i+1}/{len(datapoint_sources)}] Processing: {name} ({fmt})"
                 )
 
-                data_state[s_id] = {
-                    "metadata": source,
-                    "content": tagged_content,
-                    "timestamp": datetime.now().isoformat(),
-                }
-                self._save_checkpoint(data_state, checkpoint_path)
+                try:
+                    content_result = ""
 
-        # Generate Report (Disk)
-        self._generate_md_report(data_state, report_path)
+                    if fmt == "youtube":
+                        # For Breadth Scan, we want "Headlines" (Recent Titles), not transcripts
+                        titles = yt_handler.get_recent_titles(url, days=7)
+                        if titles:
+                            content_result = "\n".join(
+                                titles
+                            )  # Store as newline-separated string
+                        else:
+                            content_result = "No recent videos found."
 
-        # Aggregate content for the next task (Memory)
-        # We combine all content into one big string for the LLM
-        aggregated_text = []
-        for s_id, entry in data_state.items():
-            meta = entry["metadata"]
-            content = entry["content"]
-            aggregated_text.append(f"## Source: {meta['name']}\n{content}")
+                    else:
+                        # Default to Web Extraction
+                        content_result = extractor.extract(url)
 
-        # Save to context so LLMTransformTask can find it
-        output_key = config.get("output_key", "scanned_content_blob")
-        context.set(output_key, "\n\n".join(aggregated_text))
+                    # Structure the Item
+                    item = {
+                        "id": source.get("id"),
+                        "source": name,
+                        "url": url,
+                        "type": "datapoint",
+                        "format": fmt,
+                        "content": content_result,
+                        "scraped_at": datetime.now().isoformat(),
+                        "tags": source.get("tags", []),
+                        "enrichment": {},
+                    }
+
+                    final_data_list.append(item)
+
+                    # Update the specific key in the master state
+                    artifact_state[output_key] = final_data_list
+                    # Write the FULL artifact back to disk
+                    self._save_checkpoint_dict(artifact_state, checkpoint_file)
+
+                except Exception as e:
+                    logger.error(f"Failed to process source {name}: {e}")
+                    continue
+
+        finally:
+            extractor.close()
+
+        # Final Context Update
+        context.set(output_key, final_data_list)
+        logger.info(
+            f"Breadth Scan Complete. Saved to '{output_key}' in {checkpoint_file}"
+        )
 
         return context
 
-    def _load_checkpoint(self, path: str) -> Dict:
-        if os.path.exists(path):
-            with open(path, encoding="utf-8") as f:
-                return json.load(f)
+    def _load_checkpoint_dict(self, filepath: str) -> Dict[str, Any]:
+        """Safely loads the FULL JSON artifact."""
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        return data
+            except Exception:
+                return {}
         return {}
 
-    def _save_checkpoint(self, state: Dict, path: str) -> None:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
-
-    def _generate_md_report(self, data_state: Dict, path: str) -> None:
-        """
-        Generates a clean markdown report using the MarkdownFormatter.
-        Wraps bulky source content in collapsible dropdowns.
-        """
-        sections = []
-
-        # Header
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        sections.append(MDF.h1(f"Source Scan Report: {date_str}"))
-        sections.append(f"**Total Sources Scanned:** {len(data_state)}\n")
-
-        # Iterate through sources
-        for s_id, entry in data_state.items():
-            meta = entry["metadata"]
-
-            # Create a descriptive title for the dropdown summary
-            # e.g., "TechCrunch (Type: news_site | Rank: 1)"
-            source_name = meta.get("name", "Unknown Source")
-            source_type = meta.get("type", "N/A")
-            source_rank = meta.get("rank", "N/A")
-
-            title = f"{source_name} (Type: {source_type} | Rank: {source_rank})"
-
-            # The content is the raw tagged XML string
-            raw_content = entry["content"]
-
-            # Wrap in dropdown
-            dropdown = MDF.create_dropdown(title, raw_content)
-            sections.append(dropdown)
-
-        # Write to file
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("\n\n".join(sections))
+    def _save_checkpoint_dict(self, data: Dict[str, Any], filepath: str) -> None:
+        """Atomic write of the full artifact."""
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
