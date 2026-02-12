@@ -1,255 +1,98 @@
 import logging
-import time
-import os
-import re
+from typing import Dict
 from bs4 import BeautifulSoup
 from selenium import webdriver
-from selenium.webdriver.firefox.options import Options as FirefoxOptions
-from selenium.webdriver.common.by import By
+from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
-from src.utils.youtube import YouTubeHandler
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
+import trafilatura
 
 logger = logging.getLogger(__name__)
 
 
-class ContentExtractor:
+class WebPageExtractor:
     """
-    The Unified Extractor.
-    - Handles Web (Legacy One-and-Done Strategy for Stability)
-    - Handles YouTube (Paid -> Free -> Tactiq -> Manual Failover)
-    - Manages Memory (Driver Rotation)
-    - Centralized Retry Configuration
+    Webpage content extractor.
+    Resets the browser every X fetches to prevent memory bloat.
     """
-
-    DRIVER_RESET_THRESHOLD = 25
 
     def __init__(self, headless: bool = True):
         self.headless = headless
         self.driver = None
-        self.request_count = 0
+        self.fetch_count = 0
+        self.RESET_THRESHOLD = 10  # Rotation limit
 
-        # --- Centralized Retry Configuration ---
+    def _setup_driver(self):
+        # If driver exists but reached threshold, kill it first
+        if self.driver and self.fetch_count >= self.RESET_THRESHOLD:
+            logger.info(
+                f"Reset threshold ({self.RESET_THRESHOLD}) reached. Rotating driver..."
+            )
+            self.close()
 
-        self.max_retries = 2
-        self.retry_delays = [1, 2]
+        # Initialize fresh driver if none exists
+        if not self.driver:
+            firefox_options = Options()
+            if self.headless:
+                firefox_options.add_argument("-headless")
 
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
+            # Performance/Memory Preferences
+            firefox_options.set_preference(
+                "permissions.default.image", 2
+            )  # 2 = Block images
+            firefox_options.set_preference(
+                "dom.ipc.plugins.enabled.libflashplayer.so", "false"
+            )
 
-    # --- Driver Lifecycle ---
+            self.driver = webdriver.Firefox(options=firefox_options)
+            self.fetch_count = 0  # Reset counter for the new driver
 
-    def _create_fresh_driver(self):
-        """
-        Creates a standalone driver instance.
-        Used for the 'One-and-Done' legacy strategy.
-        """
-        options = FirefoxOptions()
-        if self.headless:
-            options.add_argument("--headless")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
+    def extract(self, url: str) -> Dict[str, str]:
+        self._setup_driver()
+        self.fetch_count += 1  # Increment on every call
 
-        # Disable caching to minimize disk/ram usage during the short life of this driver
-        options.set_preference("browser.cache.disk.enable", False)
-        options.set_preference("browser.cache.memory.enable", False)
-        options.set_preference("browser.cache.offline.enable", False)
-        options.set_preference("network.http.use-cache", False)
+        try:
+            logger.info(
+                f"[{self.fetch_count}/{self.RESET_THRESHOLD}] Navigating to: {url}"
+            )
+            self.driver.get(url)
 
-        return webdriver.Firefox(options=options)
+            # Explicit Wait (The "Selenium Way")
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
 
-    def _init_driver(self):
-        """
-        Initializes the persistent class-level driver (used for YouTube/Tactiq).
-        """
-        if self.driver:
-            try:
-                self.driver.quit()
-            except Exception:
-                pass
+            page_source = self.driver.page_source
 
-        logger.info(f"Initializing Firefox WebDriver (Headless: {self.headless})...")
-        self.driver = self._create_fresh_driver()
-        self.request_count = 0
-        return self.driver
+            # Content Extraction
+            content = trafilatura.extract(page_source, include_comments=False)
+            if not content:
+                soup = BeautifulSoup(page_source, "html.parser")
+                content = soup.get_text(separator="\n", strip=True)
 
-    def _get_driver(self):
-        """
-        Retrieves the persistent driver, rotating it if threshold is reached.
-        """
-        if self.driver is None or self.request_count >= self.DRIVER_RESET_THRESHOLD:
-            self._init_driver()
-        return self.driver
+            title = self._extract_title_metadata(page_source)
+
+            return {"content": content, "title": title}
+
+        except Exception as e:
+            logger.error(f"Web extraction failed for {url}: {e}")
+            return {"content": "", "title": ""}
+
+    def _extract_title_metadata(self, html: str) -> str:
+        soup = BeautifulSoup(html, "html.parser")
+        og_title = soup.find("meta", property="og:title")
+        if og_title and og_title.get("content"):
+            return og_title["content"].strip()
+        if soup.title and soup.title.string:
+            return soup.title.string.strip()
+        return "Untitled Document"
 
     def close(self):
         if self.driver:
-            self.driver.quit()
-            self.driver = None
-
-    def open_page_for_user(self, url: str):
-        """
-        FAILOVER TOOL: Launches a VISIBLE browser for the user to see the page.
-        """
-        logger.info("Switching to Visible Mode for manual review...")
-        if self.headless:
-            if self.driver:
+            try:
                 self.driver.quit()
-            self.driver = None
-            self.headless = False
-
-        driver = self._get_driver()
-        driver.get(url)
-
-    # --- Main Entry Point ---
-
-    def extract(self, url_or_path: str) -> str:
-        self.request_count += 1
-
-        # 1. Local File
-        if os.path.exists(url_or_path):
-            return self._read_local_file(url_or_path)
-
-        # 2. YouTube
-        if "youtube.com" in url_or_path or "youtu.be" in url_or_path:
-            return self._extract_youtube(url_or_path)
-
-        # 3. Web Page
-        return self._extract_web(url_or_path)
-
-    # --- Helpers ---
-
-    def _clean_html_content(self, html_content: str) -> str:
-        soup = BeautifulSoup(html_content, "html.parser")
-        for script_or_style in soup(
-            [
-                "script",
-                "style",
-                "noscript",
-                "header",
-                "footer",
-                "nav",
-                "aside",
-                "iframe",
-            ]
-        ):
-            script_or_style.decompose()
-        text = soup.get_text(separator=" ", strip=True)
-        text = re.sub(r"\s+", " ", text)
-        return text.strip()
-
-    def _read_local_file(self, path: str) -> str:
-        try:
-            with open(path, encoding="utf-8") as f:
-                return f.read()
-        except Exception as e:
-            raise RuntimeError(f"Failed to read local file: {e}")
-
-    def _get_delay(self, attempt_index: int) -> int:
-        if attempt_index < len(self.retry_delays):
-            return self.retry_delays[attempt_index]
-        return 2
-
-    # --- Extraction Strategies ---
-
-    def _extract_youtube(self, url: str) -> str:
-        handler = YouTubeHandler()
-
-        video_id = handler.extract_video_id(url)
-        if not video_id:
-            raise ValueError("Invalid YouTube URL")
-
-        # Tier 0: Paid API
-        for attempt in range(self.max_retries + 1):
-            text = handler.get_transcript_paid(video_id)
-            if text:
-                logger.info(
-                    f"YouTube extraction success (Tier 0: Paid API, Attempt {attempt+1})"
-                )
-                return f"Source: YouTube (Paid API)\n\n{text}"
-
-            if attempt < self.max_retries:
-                time.sleep(self._get_delay(attempt))
-
-        # Tier 1: Free API
-        for attempt in range(self.max_retries + 1):
-            text = handler.get_transcript_free(video_id)
-            if text:
-                logger.info(
-                    f"YouTube extraction success (Tier 1: Free API, Attempt {attempt+1})"
-                )
-                return f"Source: YouTube (Free API)\n\n{text}"
-
-            if attempt < self.max_retries:
-                time.sleep(self._get_delay(attempt))
-
-        # Tier 2: Selenium Tactiq
-        # Uses the persistent driver because Tactiq might need cookies/extensions or state
-        for attempt in range(self.max_retries + 1):
-            try:
-                driver = self._get_driver()
-                text = handler.get_transcript_tactiq(driver, url)
-                if text:
-                    logger.info(
-                        f"YouTube extraction success (Tier 2: Tactiq, Attempt {attempt+1})"
-                    )
-                    return f"Source: YouTube (Tactiq)\n\n{text}"
             except Exception as e:
-                logger.warning(f"Tactiq attempt {attempt+1} failed: {e}")
-                self._init_driver()
-
-            if attempt < self.max_retries:
-                time.sleep(self._get_delay(attempt))
-
-        raise RuntimeError("YouTube Automated Extraction Failed (All Tiers).")
-
-    def _extract_web(self, url: str) -> str:
-        """
-        Extracts webpage content using the Legacy 'One-and-Done' strategy.
-        Creates a fresh driver for this specific URL and destroys it immediately.
-        """
-        for attempt in range(self.max_retries + 1):
-            driver = None  # Local scope driver
-            try:
-                if attempt > 0:
-                    logger.info(
-                        f"Webpage Retry {attempt + 1}/{self.max_retries + 1}..."
-                    )
-
-                # Initialize FRESH driver for this single request
-                logger.info(f"Spinning up fresh driver for: {url}")
-                driver = self._create_fresh_driver()
-
-                # Set a strict page load timeout to prevent hangs
-                driver.set_page_load_timeout(30)
-
-                driver.get(url)
-
-                WebDriverWait(driver, 20).until(
-                    lambda d: d.find_element(By.TAG_NAME, "body").text.strip() != ""
-                )
-
-                html = driver.page_source
-                cleaned_text = self._clean_html_content(html)
-
-                if cleaned_text:
-                    logger.info(f"Webpage extraction successful on attempt {attempt+1}")
-                    return f"Source: Web (Selenium)\n\n{cleaned_text}"
-
-            except Exception as e:
-                logger.warning(f"Webpage attempt {attempt + 1} failed: {e}")
-                # No need to call self._init_driver() here because we are using a local 'driver'
-
+                logger.error(f"Error during driver quit: {e}")
             finally:
-                # IMMEDIATE CLEANUP
-                # This guarantees the process is killed before we move to the next URL/Attempt
-                if driver:
-                    try:
-                        driver.quit()
-                        logger.debug("Disposable driver closed.")
-                    except Exception as e:
-                        logger.error(f"Error closing disposable driver: {e}")
-
-            if attempt < self.max_retries:
-                time.sleep(self._get_delay(attempt))
-
-        raise RuntimeError(f"All webpage extraction attempts failed for {url}")
+                self.driver = None
