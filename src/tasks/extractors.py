@@ -229,12 +229,26 @@ class SourceGatheringTask(PipelineTask):
             )
             os.makedirs(os.path.dirname(link_file), exist_ok=True)
 
+            driver_manager = WebDriverManager()
+
             for i, source in enumerate(analysis_sources):
                 source_name = source.get("name")
+                source_url = source.get("url")
 
-                # UX: Write Prompt to File
+                if source_url:
+                    logger.info(f"Opening browser for source: {source_name}")
+                    try:
+                        driver = driver_manager.get_driver(headless=False)
+                        driver.get(source_url)
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not auto-open browser for {source_name}: {e}"
+                        )
+
                 with open(link_file, "w", encoding="utf-8") as f:
-                    f.write(f">>> Input links for source: {source_name} below:\n\n")
+                    f.write(
+                        f">>> Input links for source: {source_name} below:\n\n"
+                    )  # UX
 
                 print(f"\nSOURCE [{i+1}/{len(analysis_sources)}]: {source_name}")
                 print(f"Action: Paste links into '{link_file}' and save.")
