@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class WebDriverManager:
     """
-    Singleton to manage a single Firefox instance across all extractors.
+    Singleton to manage a single Firefox instance.
     """
 
     _instance = None
@@ -25,50 +25,55 @@ class WebDriverManager:
             cls._instance.driver = None
             cls._instance.fetch_count = 0
             cls._instance.RESET_THRESHOLD = 10
-            cls._instance.headless = False
+            cls._instance.current_headless_mode = True  # Default state
 
-            # Register cleanup.
-            # Runs automatically when the Python script exits.
             atexit.register(cls._instance.quit_driver)
 
         return cls._instance
 
-    def get_driver(self):
+    def get_driver(self, headless: bool = True):
+        """
+        Returns the WebDriver instance.
+        Restarts the driver if the requested 'headless' mode differs from the active one.
+        """
+        # Check if we need to switch modes
+        if self.driver is not None and self.current_headless_mode != headless:
+            logger.info(
+                f"Switching Driver Mode (Headless: {self.current_headless_mode} -> {headless}). Restarting..."
+            )
+            self.quit_driver()
+
         if self.driver and self.fetch_count >= self.RESET_THRESHOLD:
             logger.info(
-                f"Global reset threshold ({self.RESET_THRESHOLD}) reached. Rotating Driver to clear RAM."
+                f"Global reset threshold ({self.RESET_THRESHOLD}) reached. Rotating Driver."
             )
             self.quit_driver()
 
         if not self.driver:
-            logger.info("Initializing fresh Firefox WebDriver instance...")
+            self.current_headless_mode = headless  # Update state
+            mode_str = "Headless" if headless else "UI (Visible)"
+            logger.info(f"Initializing Firefox WebDriver in {mode_str} mode...")
+
             options = Options()
-            if self.headless:
+            if headless:
                 options.add_argument("-headless")
 
-            # --- Optimization preferences ---
-            # Heavy Resource Blocking (Huge bandwidth saver)
-            options.set_preference("permissions.default.image", 2)  # Block Images
-            options.set_preference(
-                "browser.display.use_document_fonts", 0
-            )  # Block Web Fonts
-            # Media & Autoplay Blocking
-            # 0=Allow, 1=Block, 5=Block All (including HTML5 video)
+            # Optimization preferences
+            options.set_preference("permissions.default.image", 2)
+            options.set_preference("browser.display.use_document_fonts", 0)
             options.set_preference("media.autoplay.default", 5)
             options.set_preference("media.autoplay.blocking_policy", 2)
-            options.set_preference("media.volume_scale", "0.0")  # Mute audio
-            # Network & Telemetry (Reduce overhead)
+            options.set_preference("media.volume_scale", "0.0")
             options.set_preference("network.prefetch-next", False)
             options.set_preference("network.dns.disablePrefetch", True)
             options.set_preference("dom.ipc.plugins.enabled.libflashplayer.so", "false")
-            # Disable Firefox "Safe Browsing" (Can save 1-2s on startup)
             options.set_preference("browser.safebrowsing.malware.enabled", False)
             options.set_preference("browser.safebrowsing.phishing.enabled", False)
 
             try:
                 self.driver = webdriver.Firefox(options=options)
                 self.fetch_count = 0
-                logger.info("Firefox WebDriver initialized successfully.")
+                logger.info(f"Firefox WebDriver initialized ({mode_str}).")
             except Exception as e:
                 logger.critical(f"Failed to initialize Firefox WebDriver: {e}")
                 raise
@@ -81,7 +86,6 @@ class WebDriverManager:
             logger.info("Quitting Firefox WebDriver...")
             try:
                 self.driver.quit()
-                logger.info("WebDriver closed successfully.")
             except Exception as e:
                 logger.error(f"Error during WebDriver quit: {e}")
             finally:
