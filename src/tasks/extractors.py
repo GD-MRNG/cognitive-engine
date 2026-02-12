@@ -1,273 +1,423 @@
 import os
-import json
-from datetime import datetime
+import time
 import logging
-from typing import Dict, Any
+from datetime import datetime
+from typing import Dict, Any, List
 from src.core.interfaces import PipelineTask
 from src.core.context import WorkflowContext
 from src.core.registry import register_task
-from src.utils.web import ContentExtractor
-from src.utils.youtube import YouTubeHandler
+from src.utils.web import WebDriverManager, WebPageExtractor
+from src.utils.youtube import YouTubeExtractor
+from src.utils.io import CheckpointManager
 
 logger = logging.getLogger(__name__)
 
+# TODO: Refactor or Deprecate this task
 
-@register_task("ContentExtractionTask")
-class ContentExtractionTask(PipelineTask):
-    """
-    Iterates through a list of CSV items (dict).
-    Uses 'url' for extraction. Preserves 'title', 'source', 'date'.
-    """
+# @register_task("ContentExtractionTask")
+# class ContentExtractionTask(PipelineTask):
+#     """
+#     Iterates through a list of CSV items (dict).
+#     Uses 'url' for extraction. Preserves 'title', 'source', 'date'.
+#     """
 
-    def execute(
-        self, context: WorkflowContext, config: Dict[str, Any]
-    ) -> WorkflowContext:
-        input_key = config.get("input_key")
-        output_key = config.get("output_key")
-        failure_key = config.get("failure_key", "failed_items")
+#     def execute(
+#         self, context: WorkflowContext, config: Dict[str, Any]
+#     ) -> WorkflowContext:
+#         input_key = config.get("input_key")
+#         output_key = config.get("output_key")
+#         failure_key = config.get("failure_key", "failed_items")
 
-        items = context.require(input_key)
+#         items = context.require(input_key)
 
-        # Initialize the robust extractor
-        extractor = ContentExtractor(headless=True)
+#         # Initialize the robust extractor
+#         extractor = ContentExtractor(headless=True)
 
-        success_docs = []
-        failed_items = []
+#         success_docs = []
+#         failed_items = []
 
-        logger.info(f"Starting extraction for {len(items)} items...")
+#         logger.info(f"Starting extraction for {len(items)} items...")
 
-        try:
-            for i, item in enumerate(items):
-                url = item["url"]
-                logger.info(f"[{i+1}/{len(items)}] Processing: {url}")
+#         try:
+#             for i, item in enumerate(items):
+#                 url = item["url"]
+#                 logger.info(f"[{i+1}/{len(items)}] Processing: {url}")
 
-                try:
-                    # Robust Extract
-                    raw_text = extractor.extract(url)
+#                 try:
+#                     # Robust Extract
+#                     raw_text = extractor.extract(url)
 
-                    # Attach CSV Metadata to the Document Object
-                    doc = {
-                        "filename": f"{item['source']}_{i}.txt",  # Unique ID
-                        "content": raw_text,
-                        "url": url,
-                        "title": item["title"],
-                        "source": item["source"],
-                        "date": item["date"],
-                        "source_type": "text_queue_automated",
-                    }
-                    success_docs.append(doc)
+#                     # Attach CSV Metadata to the Document Object
+#                     doc = {
+#                         "filename": f"{item['source']}_{i}.txt",  # Unique ID
+#                         "content": raw_text,
+#                         "url": url,
+#                         "title": item["title"],
+#                         "source": item["source"],
+#                         "date": item["date"],
+#                         "source_type": "text_queue_automated",
+#                     }
+#                     success_docs.append(doc)
 
-                except Exception as e:
-                    logger.warning(f"Failed to extract {url}: {e}")
-                    failed_items.append(item)
-        finally:
-            extractor.close()
+#                 except Exception as e:
+#                     logger.warning(f"Failed to extract {url}: {e}")
+#                     failed_items.append(item)
+#         finally:
+#             extractor.close()
 
-        context.set(output_key, success_docs)
-        context.set(failure_key, failed_items)
-        return context
+#         context.set(output_key, success_docs)
+#         context.set(failure_key, failed_items)
+#         return context
 
 
 @register_task("ManualReviewTask")
 class ManualReviewTask(PipelineTask):
     """
-    Fallback task for failed items. Pops a browser and asks user to paste content.
+    Human-in-the-Loop (HITL) Review.
+    1. Filters sources by type (e.g., 'analysis').
+    2. Checks for missing keys (e.g., 'content', 'title').
+    3. If missing, opens a visible browser and prompts user for CLI input.
     """
 
     def execute(
         self, context: WorkflowContext, config: Dict[str, Any]
     ) -> WorkflowContext:
-        input_failure_key = config.get("input_failure_key")
-        output_success_key = config.get("output_success_key")
-        interactive = config.get("interactive", False)
+        target_key = config.get("target_key", "research_data")
+        checkpoint_file = config.get("checkpoint_file", "outputs/research.json")
 
-        failed_items = context.get(input_failure_key, [])
-        success_docs = context.get(output_success_key, [])
+        target_types = config.get(
+            "target_types", ["analysis"]
+        )  # List of types to check
+        missing_fields = config.get("missing_fields", ["content"])  # Keys to validate
 
-        if not failed_items or not interactive:
-            return context
+        artifact = CheckpointManager.load(checkpoint_file)
+        items = artifact.get(target_key, [])
 
-        logger.info(
-            f"!!! MANUAL INTERVENTION REQUIRED FOR {len(failed_items)} ITEMS !!!"
-        )
-        extractor = ContentExtractor(headless=False)  # Visible Browser
+        if not items:
+            items = context.get(target_key, [])
+
+        driver_manager = WebDriverManager()
+        updated = False
 
         try:
-            for item in failed_items:
-                url = item["url"]
-                print(f"\n{'='*60}\nOPENING: {url}\nTITLE: {item['title']}\n{'='*60}")
+            for i, item in enumerate(items):
+                if item.get("type") not in target_types:
+                    continue
 
-                try:
-                    if url.startswith("http"):
-                        extractor.open_page_for_user(url)
-                except Exception:
-                    pass
+                fields_to_fix = [
+                    field for field in missing_fields if not item.get(field)
+                ]
 
-                print(">> Paste Content below (Ctrl+Z/D to finish):")
-                lines = []
-                try:
-                    while True:
-                        line = input()
-                        lines.append(line)
-                except EOFError:
-                    pass
-                content = "\n".join(lines)
+                if not fields_to_fix:
+                    continue
 
-                if content.strip():
-                    success_docs.append(
-                        {
-                            "filename": f"manual_{item['source']}.txt",
-                            "content": content,
-                            "url": url,
-                            "title": item["title"],
-                            "source": item["source"],
-                            "date": item["date"],
-                        }
+                url = item.get("url", "")
+                source = item.get("source", "Unknown")
+
+                print(f"\n{'!'*60}")
+                print(f"MANUAL REVIEW REQUIRED [{i+1}/{len(items)}]")
+                print(f"Source: {source}")
+                print(f"URL:    {url}")
+                print(f"Missing: {', '.join(fields_to_fix)}")
+                print(f"{'!'*60}")
+
+                if url:
+                    logger.info(f"Opening browser for: {url}")
+                    # Open Browser (Visible Mode)
+                    driver = driver_manager.get_driver(headless=False)
+                    try:
+                        driver.get(url)
+                    except Exception as e:
+                        logger.error(f"Failed to open URL automatically: {e}")
+                else:
+                    print(">> No URL provided for this item.")
+
+                # Sequential Input Loop
+                for field in fields_to_fix:
+                    print(
+                        f"\n>>> Please enter value for '{field}' (End with Ctrl+D or Ctrl+Z on Windows):"
                     )
-        finally:
-            extractor.close()
 
-        context.set(output_success_key, success_docs)
+                    user_input_lines = []
+                    try:
+                        while True:
+                            line = input()
+                            user_input_lines.append(line)
+                    except EOFError:
+                        pass  # User signaled end of input
+
+                    value = "\n".join(user_input_lines).strip()
+
+                    if value:
+                        item[field] = value
+                        updated = True
+                        print(f">> Updated '{field}'.")
+                    else:
+                        print(f">> Skipped '{field}' (empty input).")
+
+                if updated:
+                    artifact[target_key] = items
+                    CheckpointManager.save(checkpoint_file, artifact)
+
+        except KeyboardInterrupt:
+            print("\nManual review interrupted by user.")
+        finally:
+            driver_manager.quit_driver()
+
+        if updated:
+            context.set(target_key, items)
+
         return context
 
 
-@register_task("BreadthGatheringTask")
-class BreadthGatheringTask(PipelineTask):
-    """
-    Automated Breadth Scan.
-    Iterates through 'datapoint' sources.
-    - If format='youtube': Fetches recent video titles (Headlines).
-    - If format='webpage': Scrapes full page content.
+@register_task("SourceGatheringTask")
+class SourceGatheringTask(PipelineTask):
 
-    Updates the 'Golden Artifact' (research.json) under a specific top-level key
-    (e.g., 'breadth_scan'), preserving existing data.
+    """
+    Constructs the 'To-Do' list for the research pipeline.
     """
 
     def execute(
         self, context: WorkflowContext, config: Dict[str, Any]
     ) -> WorkflowContext:
         input_key = config.get("input_key", "raw_sources")
-        output_key = config.get("output_key", "breadth_scan")
+        output_key = config.get("output_key", "research_data")
         checkpoint_file = config.get("checkpoint_file", "outputs/research.json")
+        link_file = config.get("link_file", "inputs/curated_links.txt")
 
-        # 1. Load Sources from Context
         all_sources = context.get(input_key, [])
-        datapoint_sources = [s for s in all_sources if s.get("type") == "datapoint"]
-
-        if not datapoint_sources:
-            logger.warning(
-                "BreadthGatheringTask: No sources with type='datapoint' found."
-            )
-            # Initialize empty list in context to prevent downstream errors
-            context.set(output_key, [])
+        if not all_sources:
+            logger.warning("SourceGatheringTask: No sources found in context.")
             return context
 
-        logger.info(
-            f"BreadthGatheringTask: Processing {len(datapoint_sources)} datapoint sources."
-        )
+        datapoint_sources = [s for s in all_sources if s.get("type") == "datapoint"]
+        analysis_sources = [s for s in all_sources if s.get("type") == "analysis"]
 
-        # 2. Load Checkpoint State
-        artifact_state = self._load_checkpoint_dict(checkpoint_file)
+        artifact = CheckpointManager.load(checkpoint_file)
+        current_items = artifact.get(output_key, [])
+        if not isinstance(current_items, list):
+            current_items = []
 
-        # Get the specific list we are working on (e.g., 'breadth_scan')
-        current_list = artifact_state.get(output_key, [])
-
-        # Map URL to existing item for quick lookup
+        # Create a lookup for deduplication
         existing_urls = {
-            item.get("url"): item for item in current_list if item.get("url")
+            item.get("url"): item for item in current_items if item.get("url")
         }
 
-        # Rebuild the list in source order
-        final_data_list = []
-
-        # Initialize Handlers
-        extractor = ContentExtractor(headless=True)
-        yt_handler = YouTubeHandler()
-
-        try:
-            for i, source in enumerate(datapoint_sources):
+        # --- PHASE 1: Automated Breadth Scan ---
+        if datapoint_sources:
+            logger.info(
+                f"--- Starting Phase 1: Automated Breadth Scan ({len(datapoint_sources)} sources) ---"
+            )
+            for source in datapoint_sources:
                 url = source.get("url")
-                name = source.get("name")
-                fmt = source.get("format", "webpage")
 
-                # Resume Logic: Skip if already processed
                 if url in existing_urls:
-                    logger.info(
-                        f"[{i+1}/{len(datapoint_sources)}] Skipping (Already Scanned): {name}"
-                    )
-                    final_data_list.append(existing_urls[url])
+                    # Ensure it's in our list=
+                    if existing_urls[url] not in current_items:
+                        current_items.append(existing_urls[url])
                     continue
 
-                logger.info(
-                    f"[{i+1}/{len(datapoint_sources)}] Processing: {name} ({fmt})"
-                )
+                self._add_item(current_items, source, url, "datapoint")
+
+                artifact[output_key] = current_items
+                CheckpointManager.save(checkpoint_file, artifact)
+
+        # --- PHASE 2: Interactive Depth Scan ---
+        if analysis_sources:
+            logger.info(
+                f"--- Starting Phase 2: Interactive Depth Scan ({len(analysis_sources)} sources) ---"
+            )
+            os.makedirs(os.path.dirname(link_file), exist_ok=True)
+
+            for i, source in enumerate(analysis_sources):
+                source_name = source.get("name")
+
+                # UX: Write Prompt to File
+                with open(link_file, "w", encoding="utf-8") as f:
+                    f.write(f">>> Input links for source: {source_name} below:\n\n")
+
+                print(f"\nSOURCE [{i+1}/{len(analysis_sources)}]: {source_name}")
+                print(f"Action: Paste links into '{link_file}' and save.")
+                input(">> Press [ENTER] when ready... ")
+
+                new_urls = self._read_link_file(link_file)
+
+                if not new_urls:
+                    logger.info(f"No links provided for {source_name}.")
+                    continue
+
+                for url in new_urls:
+                    if url in existing_urls:
+                        logger.info(f"Skipping duplicate: {url}")
+                        continue
+
+                    self._add_item(current_items, source, url, "analysis")
+
+                    # Update Lookup
+                    existing_urls[url] = current_items[-1]
+
+                    artifact[output_key] = current_items
+                    CheckpointManager.save(checkpoint_file, artifact)
+
+        context.set(output_key, current_items)
+        return context
+
+    def _add_item(
+        self, items_list: List, source_obj: Dict, url: str, type_override: str
+    ):
+        items_list.append(
+            {
+                "id": source_obj.get("id"),
+                "source": source_obj.get("name"),
+                "url": url,
+                "type": type_override,
+                "format": source_obj.get("format", "webpage"),
+                "tags": source_obj.get("tags", []),
+            }
+        )
+
+    def _read_link_file(self, filepath: str) -> List[str]:
+        urls = []
+        if os.path.exists(filepath):
+            with open(filepath, encoding="utf-8") as f:
+                for line in f:
+                    cleaned = line.strip()
+                    if cleaned and not cleaned.startswith(">>>"):
+                        urls.append(cleaned)
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write("")
+        return urls
+
+
+@register_task("ContentScrapingTask")
+class ContentScrapingTask(PipelineTask):
+    """
+    Source Content Scraper.
+    Orchestrates extraction logic based on source type/format.
+    """
+
+    def execute(
+        self, context: WorkflowContext, config: Dict[str, Any]
+    ) -> WorkflowContext:
+        target_key = config.get("target_key", "research_data")
+        checkpoint_file = config.get("checkpoint_file", "outputs/research.json")
+
+        artifact = CheckpointManager.load(checkpoint_file)
+        items = artifact.get(target_key, [])
+
+        if not items:
+            items = context.get(target_key, [])
+            if not items:
+                logger.warning(f"ContentScrapingTask: No items found in '{target_key}'")
+                return context
+
+        self.web_extractor = WebPageExtractor()
+        self.yt_extractor = YouTubeExtractor()
+
+        updated = False
+        logger.info(f"ContentScrapingTask: Processing {len(items)} items.")
+
+        try:
+            for item in items:
+                # Skip if content key exists and is truthy
+                if item.get("content"):
+                    continue
+
+                url = item.get("url")
+                fmt = item.get("format", "webpage")
+                typ = item.get("type", "datapoint")
+
+                if not url:
+                    continue
+
+                logger.info(f"Scraping [{typ}/{fmt}]: {item.get('source')}")
 
                 try:
                     content_result = ""
 
                     if fmt == "youtube":
-                        # For Breadth Scan, we want "Headlines" (Recent Titles), not transcripts
-                        titles = yt_handler.get_recent_titles(url, days=7)
-                        if titles:
-                            content_result = "\n".join(
-                                titles
-                            )  # Store as newline-separated string
+                        if typ == "datapoint":
+                            content_result = self._scrape_youtube_headlines(url)
                         else:
-                            content_result = "No recent videos found."
-
+                            content_result = (
+                                self._scrape_youtube_transcript_with_fallback(url)
+                            )
                     else:
-                        # Default to Web Extraction
-                        content_result = extractor.extract(url)
+                        content_result = self._scrape_webpage_with_retry(url)
 
-                    # Structure the Item
-                    item = {
-                        "id": source.get("id"),
-                        "source": name,
-                        "url": url,
-                        "type": "datapoint",
-                        "format": fmt,
-                        "content": content_result,
-                        "scraped_at": datetime.now().isoformat(),
-                        "tags": source.get("tags", []),
-                        "enrichment": {},
-                    }
+                    item["content"] = content_result
+                    item["scraped_at"] = datetime.now().isoformat()
+                    updated = True
 
-                    final_data_list.append(item)
-
-                    # Update the specific key in the master state
-                    artifact_state[output_key] = final_data_list
-                    # Write the FULL artifact back to disk
-                    self._save_checkpoint_dict(artifact_state, checkpoint_file)
+                    artifact[target_key] = items
+                    CheckpointManager.save(checkpoint_file, artifact)
 
                 except Exception as e:
-                    logger.error(f"Failed to process source {name}: {e}")
-                    continue
+                    logger.error(f"Failed to scrape {url}: {e}")
+                    # Mark as empty to prevent infinite blocking
+                    item["content"] = ""
 
         finally:
-            extractor.close()
+            WebDriverManager().quit_driver()
 
-        # Final Context Update
-        context.set(output_key, final_data_list)
-        logger.info(
-            f"Breadth Scan Complete. Saved to '{output_key}' in {checkpoint_file}"
-        )
+        if updated:
+            context.set(target_key, items)
 
         return context
 
-    def _load_checkpoint_dict(self, filepath: str) -> Dict[str, Any]:
-        """Safely loads the FULL JSON artifact."""
-        if os.path.exists(filepath):
-            try:
-                with open(filepath, encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict):
-                        return data
-            except Exception:
-                return {}
-        return {}
+    def _scrape_youtube_headlines(self, url: str) -> str:
+        try:
+            titles = self.yt_extractor.get_recent_channel_titles(url)
+            if titles:
+                return "\n".join(titles)
+            return "No recent videos found."
+        except Exception as e:
+            logger.error(f"YouTube Headline fetch failed for {url}: {e}")
+            return ""
 
-    def _save_checkpoint_dict(self, data: Dict[str, Any], filepath: str) -> None:
-        """Atomic write of the full artifact."""
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+    def _scrape_youtube_transcript_with_fallback(self, url: str) -> str:
+        # Priority 1: Paid API
+        for attempt in range(3):
+            try:
+                return self.yt_extractor.get_video_transcript_paid_api(url)
+            except ValueError:
+                logger.warning("Paid API Key missing. Skipping to next method.")
+                break
+            except Exception as e:
+                logger.warning(f"Paid API Attempt {attempt+1}/3 failed: {e}")
+                if attempt < 2:
+                    time.sleep(2)
+
+        logger.info("Paid API failed. Falling back to Free API.")
+
+        # Priority 2: Free API
+        for attempt in range(2):
+            try:
+                return self.yt_extractor.get_video_transcript_free_api(url)
+            except Exception as e:
+                logger.warning(f"Free API Attempt {attempt+1}/2 failed: {e}")
+
+        logger.info("Free API failed. Falling back to Tactiq (Selenium).")
+
+        # Priority 3: Tactiq
+        for attempt in range(2):
+            try:
+                return self.yt_extractor.get_video_transcript_tactiq(url)
+            except Exception as e:
+                logger.warning(f"Tactiq Attempt {attempt+1}/2 failed: {e}")
+
+        logger.error(f"All transcript extraction methods failed for {url}")
+        return ""
+
+    def _scrape_webpage_with_retry(self, url: str) -> str:
+        for attempt in range(2):
+            try:
+                content = self.web_extractor.get_webpage_content(url)
+                if content:
+                    return content
+            except Exception as e:
+                logger.warning(
+                    f"Web scrape Attempt {attempt+1}/2 failed for {url}: {e}"
+                )
+
+        return ""
