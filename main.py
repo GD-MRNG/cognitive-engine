@@ -5,17 +5,36 @@ import os
 from dotenv import load_dotenv
 from src.core.engine import WorkflowEngine
 
-# Load environment variables from .env file
 load_dotenv()
 
 
 def setup_logging(debug: bool = False):
     level = logging.DEBUG if debug else logging.INFO
+    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S"
+    log_file = "outputs/errors.log"
+
+    os.makedirs("outputs", exist_ok=True)
+
+    # Clear Previous Log
+    if os.path.exists(log_file):
+        try:
+            os.remove(log_file)
+        except OSError:
+            # If file is locked/open by another process, just ignore
+            pass
+    # Basic Configuration (Console Output)
     logging.basicConfig(
         level=level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+        format=log_format,
+        datefmt=date_format,
     )
+    # File Handler for Warnings and Errors
+    file_handler = logging.FileHandler(log_file, mode="w")
+    file_handler.setLevel(logging.WARNING)
+    file_handler.setFormatter(logging.Formatter(log_format, datefmt=date_format))
+
+    logging.getLogger().addHandler(file_handler)
 
 
 def main():
