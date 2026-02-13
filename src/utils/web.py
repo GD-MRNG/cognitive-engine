@@ -129,6 +129,14 @@ class WebPageExtractor:
         page_source = driver.page_source
 
         soup = BeautifulSoup(page_source, "html.parser")
+
+        # Remove obvious junk tags
+        # nav: menus | footer: bottom links | aside: sidebars | script/style: code
+        for tag in soup(
+            ["nav", "footer", "header", "aside", "script", "style", "noscript", "form"]
+        ):
+            tag.decompose()
+
         content = soup.get_text(separator="\n", strip=True)
 
         if not content:
