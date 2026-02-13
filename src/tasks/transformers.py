@@ -161,7 +161,6 @@ class BatchLLMTask(PipelineTask):
 class LLMEnrichmentTask(PipelineTask):
     """
     Base Class: Generic engine for LLM-based enrichment.
-    Merges specified input fields into a single context string before querying.
     """
 
     def execute(
@@ -328,3 +327,35 @@ class RegionCategorizationTask(LLMEnrichmentTask):
             f"RegionCategorizationTask: Invalid category '{cleaned}'. Defaulting to 'Unknown'."
         )
         return "Unknown"
+
+
+@register_task("SummarizationTask")
+class SummarizationTask(LLMEnrichmentTask):
+    """
+    Specific implementation for Content Summarization.
+    """
+
+    def _post_process_response(self, text: str) -> str:
+        """
+        Cleans the LLM output by removing blockquotes and meta-commentary.
+        """
+        if not text:
+            return ""
+
+        lines = text.splitlines()
+        cleaned_lines = []
+
+        for line in lines:
+            stripped = line.strip()
+
+            # Filter out blockquotes (often used for 'thinking' or pre-amble)
+            if stripped.startswith(">"):
+                continue
+
+            # Filter out italicized thinking markers (e.g. *Thinking...*)
+            if stripped.lower().startswith("*thinking"):
+                continue
+
+            cleaned_lines.append(line)
+
+        return "\n".join(cleaned_lines).strip()
