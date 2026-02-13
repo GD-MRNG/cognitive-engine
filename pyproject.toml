@@ -29,7 +29,6 @@ pymupdf4llm = "^0.2.9"
 ebooklib = "^0.20"
 pymupdf-layout = "^1.26.6"
 google-generativeai = "^0.8.6"
-trafilatura = "^2.0.0"
 
 
 [[tool.poetry.source]]

@@ -6,7 +6,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import TimeoutException
-import trafilatura
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
@@ -57,9 +56,9 @@ class WebDriverManager:
             options = Options()
             if headless:
                 options.add_argument("-headless")
+                options.set_preference("permissions.default.image", 2)  # Disable images
 
             # Optimization preferences
-            options.set_preference("permissions.default.image", 2)
             options.set_preference("browser.display.use_document_fonts", 0)
             options.set_preference("media.autoplay.default", 5)
             options.set_preference("media.autoplay.blocking_policy", 2)
@@ -121,7 +120,7 @@ class WebPageExtractor:
 
     def get_webpage_content(self, url: str) -> str:
         """
-        Extracts main content text using Trafilatura or BeautifulSoup fallback.
+        Extracts main content text using BeautifulSoup.
         Raises RuntimeError if content is empty.
         """
         logger.info(f"Starting content extraction for: {url}")
@@ -129,15 +128,8 @@ class WebPageExtractor:
         driver = self.manager.get_driver()
         page_source = driver.page_source
 
-        # 1. Primary Strategy: Trafilatura
-        logger.debug("Attempting extraction via Trafilatura...")
-        content = trafilatura.extract(page_source, include_comments=False)
-
-        # 2. Fallback Strategy: BeautifulSoup
-        if not content:
-            logger.info("Trafilatura failed. Falling back to BeautifulSoup.")
-            soup = BeautifulSoup(page_source, "html.parser")
-            content = soup.get_text(separator="\n", strip=True)
+        soup = BeautifulSoup(page_source, "html.parser")
+        content = soup.get_text(separator="\n", strip=True)
 
         if not content:
             logger.error(f"Extraction failed. No content found for {url}")
