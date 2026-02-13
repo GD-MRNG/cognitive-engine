@@ -9,6 +9,7 @@ from src.core.registry import register_task
 from src.utils.web import WebDriverManager, WebPageExtractor
 from src.utils.youtube import YouTubeExtractor
 from src.utils.io import CheckpointManager
+from src.utils.notifications import DiscordNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -74,9 +75,9 @@ logger = logging.getLogger(__name__)
 class ManualReviewTask(PipelineTask):
     """
     Human-in-the-Loop (HITL) Review.
-    1. Filters sources by type (e.g., 'analysis').
-    2. Checks for missing keys (e.g., 'content', 'title').
-    3. If missing, opens a visible browser and prompts user for CLI input.
+    1. Pre-scans all items to identify those with missing fields.
+    2. Sends a Discord Notification if intervention is required.
+    3. Opens a visible browser and prompts user for CLI input sequentially.
     """
 
     def execute(
@@ -84,26 +85,53 @@ class ManualReviewTask(PipelineTask):
     ) -> WorkflowContext:
         target_key = config.get("target_key", "research_data")
         checkpoint_file = config.get("checkpoint_file", "outputs/research.json")
-
-        target_types = config.get(
-            "target_types", ["analysis"]
-        )  # List of types to check
-        missing_fields = config.get("missing_fields", ["content"])  # Keys to validate
+        target_types = config.get("target_types", ["analysis"])
+        missing_fields = config.get("missing_fields", ["content"])
 
         artifact = CheckpointManager.load(checkpoint_file)
         items = artifact.get(target_key, [])
 
         if not items:
             items = context.get(target_key, [])
+            if not items:
+                logger.info("ManualReviewTask: No items to check.")
+                return context
+
+        # Pre-calculate Items Needing Review
+        # We store indices so we can modify the original list in place
+        items_to_review_indices = []
+
+        for i, item in enumerate(items):
+            if item.get("type") not in target_types:
+                continue
+
+            if any(not item.get(field) for field in missing_fields):
+                items_to_review_indices.append(i)
+
+        count_needed = len(items_to_review_indices)
+
+        if count_needed == 0:
+            logger.info("ManualReviewTask: No items missing data. Skipping.")
+            return context
+
+        logger.info(f"ManualReviewTask: {count_needed} items require intervention.")
+        DiscordNotifier().send(
+            f"Manual Review Required: {count_needed} items missing {missing_fields}.",
+            level="hitl",
+        )
 
         driver_manager = WebDriverManager()
         updated = False
 
-        try:
-            for i, item in enumerate(items):
-                if item.get("type") not in target_types:
-                    continue
+        print(f"\n{'='*60}")
+        print(f"!!! HITL INTERVENTION STARTED: {count_needed} ITEMS !!!")
+        print(f"{'='*60}\n")
 
+        try:
+            for current_idx, item_idx in enumerate(items_to_review_indices):
+                item = items[item_idx]
+
+                # Re-calculate missing fields (double check)
                 fields_to_fix = [
                     field for field in missing_fields if not item.get(field)
                 ]
@@ -114,16 +142,17 @@ class ManualReviewTask(PipelineTask):
                 url = item.get("url", "")
                 source = item.get("source", "Unknown")
 
+                # UX: Progress based on fix list, not total list
                 print(f"\n{'!'*60}")
-                print(f"MANUAL REVIEW REQUIRED [{i+1}/{len(items)}]")
+                print(f"REVIEWING [{current_idx+1}/{count_needed}]")
                 print(f"Source: {source}")
                 print(f"URL:    {url}")
                 print(f"Missing: {', '.join(fields_to_fix)}")
                 print(f"{'!'*60}")
 
+                # Open Browser (Visible Mode)
                 if url:
                     logger.info(f"Opening browser for: {url}")
-                    # Open Browser (Visible Mode)
                     driver = driver_manager.get_driver(headless=False)
                     try:
                         driver.get(url)
@@ -155,6 +184,7 @@ class ManualReviewTask(PipelineTask):
                     else:
                         print(f">> Skipped '{field}' (empty input).")
 
+                # Atomic Save after every item to prevent data loss on crash
                 if updated:
                     artifact[target_key] = items
                     CheckpointManager.save(checkpoint_file, artifact)
@@ -274,6 +304,7 @@ class SourceGatheringTask(PipelineTask):
                     CheckpointManager.save(checkpoint_file, artifact)
 
         context.set(output_key, current_items)
+
         return context
 
     def _add_item(
