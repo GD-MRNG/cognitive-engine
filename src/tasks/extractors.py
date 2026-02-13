@@ -435,3 +435,80 @@ class ContentScrapingTask(PipelineTask):
                 )
 
         return ""
+
+
+@register_task("TitleScrapingTask")
+class TitleScrapingTask(PipelineTask):
+    """
+    Enriches items with titles.
+    """
+
+    def execute(
+        self, context: WorkflowContext, config: Dict[str, Any]
+    ) -> WorkflowContext:
+        target_key = config.get("target_key", "research_data")
+        checkpoint_file = config.get("checkpoint_file", "outputs/research.json")
+        target_types = config.get("target_types", ["analysis"])
+        force_refresh = config.get("force_refresh", False)
+
+        artifact = CheckpointManager.load(checkpoint_file)
+        items = artifact.get(target_key, [])
+
+        if not items:
+            items = context.get(target_key, [])
+            if not items:
+                logger.warning(f"TitleScrapingTask: No items found in '{target_key}'")
+                return context
+
+        web_extractor = WebPageExtractor()
+        yt_extractor = YouTubeExtractor()
+
+        updated = False
+        logger.info(f"TitleScrapingTask: Checking {len(items)} items.")
+
+        try:
+            for item in items:
+                # 1. Filter by Type
+                if item.get("type") not in target_types:
+                    continue
+
+                # 2. Skip if exists (unless forced)
+                if item.get("title") and not force_refresh:
+                    continue
+
+                url = item.get("url")
+                if not url:
+                    continue
+
+                fmt = item.get("format", "webpage")
+                logger.info(f"Fetching title for [{fmt}]: {url}")
+                fetched_title = ""
+
+                try:
+                    # 3. Routing
+                    if fmt == "youtube":
+                        fetched_title = yt_extractor.get_video_title(url)
+                    else:
+                        fetched_title = web_extractor.get_webpage_title(url)
+
+                    # 4. Save Result
+                    if fetched_title:
+                        item["title"] = fetched_title
+                        updated = True
+                        logger.info(f"Found title: {fetched_title}")
+
+                        artifact[target_key] = items
+                        CheckpointManager.save(checkpoint_file, artifact)
+                    else:
+                        logger.warning(f"Title unavailable for {url}")
+                        item["title"] = "Title Unavailable"
+
+                except Exception as e:
+                    logger.error(f"Failed to fetch title for {url}: {e}")
+        finally:
+            WebDriverManager().quit_driver()
+
+        if updated:
+            context.set(target_key, items)
+
+        return context
