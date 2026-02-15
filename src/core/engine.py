@@ -16,6 +16,7 @@ import src.tasks.splitters  # noqa: F401
 import src.tasks.audio  # noqa: F401
 import src.tasks.extractors  # noqa: F401
 import src.tasks.utilities  # noqa: F401
+import src.tasks.synthesis  # noqa: F401
 
 logger = logging.getLogger(__name__)
 

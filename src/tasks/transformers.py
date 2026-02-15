@@ -283,7 +283,6 @@ class RegionCategorizationTask(LLMEnrichmentTask):
         "Latin America & Caribbean",
         "North America",
         "Oceania",
-        "Unknown",
     ]
 
     CATEGORY_ALIASES = {
@@ -323,10 +322,11 @@ class RegionCategorizationTask(LLMEnrichmentTask):
             if cat.lower() == cleaned_lower:
                 return cat
 
+        # Fallback: Return empty string so ManualReviewTask catches it
         logger.warning(
-            f"RegionCategorizationTask: Invalid category '{cleaned}'. Defaulting to 'Unknown'."
+            f"RegionCategorizationTask: Invalid category '{cleaned}'. Returning empty for manual fix."
         )
-        return "Unknown"
+        return ""
 
 
 @register_task("SummarizationTask")
