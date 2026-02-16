@@ -228,6 +228,10 @@ class SourceGatheringTask(PipelineTask):
         if not isinstance(current_items, list):
             current_items = []
 
+        processed_source_ids = {
+            item.get("id") for item in current_items if item.get("id")
+        }
+
         # Create a lookup for deduplication
         existing_urls = {
             item.get("url"): item for item in current_items if item.get("url")
@@ -262,8 +266,15 @@ class SourceGatheringTask(PipelineTask):
             driver_manager = WebDriverManager()
 
             for i, source in enumerate(analysis_sources):
+                s_id = source["id"]
                 source_name = source.get("name")
                 source_url = source.get("url")
+
+                if s_id in processed_source_ids:
+                    logger.info(
+                        f"Skipping '{source_name}' (ID: {s_id}) - Data already exists in JSON."
+                    )
+                    continue
 
                 if source_url:
                     logger.info(f"Opening browser for source: {source_name}")
