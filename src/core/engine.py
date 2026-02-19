@@ -22,10 +22,13 @@ logger = logging.getLogger(__name__)
 
 
 class WorkflowEngine:
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, workspace_dir: str):
         self.config_path = config_path
         self.workflow_config = self._load_config()
         self.context = WorkflowContext()
+        self.workspace_dir = workspace_dir
+
+        self.context.set("_workspace_dir", self.workspace_dir)
 
     def _load_config(self) -> Dict[str, Any]:
         if not os.path.exists(self.config_path):

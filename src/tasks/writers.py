@@ -19,7 +19,7 @@ class ReportWriterTask(PipelineTask):
     def execute(
         self, context: WorkflowContext, config: Dict[str, Any]
     ) -> WorkflowContext:
-        filename = config.get("filename")
+        filename = self.get_workspace_path(context, config.get("filename", "report.md"))
         sections = config.get("sections", [])
 
         if not filename:
@@ -59,7 +59,9 @@ class ArtifactCheckpointTask(PipelineTask):
         self, context: WorkflowContext, config: Dict[str, Any]
     ) -> WorkflowContext:
         keys_to_save = config.get("input_keys", [])  # List of context keys
-        output_file = config.get("output_file", "outputs/research.json")
+        output_file = self.get_workspace_path(
+            context, config.get("output_file", "research.json")
+        )
 
         if not keys_to_save:
             logger.warning(

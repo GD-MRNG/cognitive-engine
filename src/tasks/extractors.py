@@ -85,7 +85,9 @@ class ManualReviewTask(PipelineTask):
         self, context: WorkflowContext, config: Dict[str, Any]
     ) -> WorkflowContext:
         target_key = config.get("target_key", "research_data")
-        checkpoint_file = config.get("checkpoint_file", "outputs/research.json")
+        checkpoint_file = self.get_workspace_path(
+            context, config.get("checkpoint_file", "research.json")
+        )
         target_types = config.get("target_types", ["analysis"])
         missing_fields = config.get("missing_fields", ["content"])
 
@@ -213,7 +215,9 @@ class SourceGatheringTask(PipelineTask):
     ) -> WorkflowContext:
         input_key = config.get("input_key", "raw_sources")
         output_key = config.get("output_key", "research_data")
-        checkpoint_file = config.get("checkpoint_file", "outputs/research.json")
+        checkpoint_file = self.get_workspace_path(
+            context, config.get("checkpoint_file", "research.json")
+        )
         link_file = config.get("link_file", "inputs/curated_links.txt")
 
         all_sources = context.get(input_key, [])
@@ -362,7 +366,9 @@ class ContentScrapingTask(PipelineTask):
         self, context: WorkflowContext, config: Dict[str, Any]
     ) -> WorkflowContext:
         target_key = config.get("target_key", "research_data")
-        checkpoint_file = config.get("checkpoint_file", "outputs/research.json")
+        checkpoint_file = self.get_workspace_path(
+            context, config.get("checkpoint_file", "research.json")
+        )
 
         artifact = CheckpointManager.load(checkpoint_file)
         items = artifact.get(target_key, [])
@@ -505,7 +511,9 @@ class TitleScrapingTask(PipelineTask):
         self, context: WorkflowContext, config: Dict[str, Any]
     ) -> WorkflowContext:
         target_key = config.get("target_key", "research_data")
-        checkpoint_file = config.get("checkpoint_file", "outputs/research.json")
+        checkpoint_file = self.get_workspace_path(
+            context, config.get("checkpoint_file", "research.json")
+        )
         target_types = config.get("target_types", ["analysis"])
         force_refresh = config.get("force_refresh", False)
 

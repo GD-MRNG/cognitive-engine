@@ -76,7 +76,9 @@ class BatchLLMTask(PipelineTask):
         output_key = config.get("output_key")  # Key to store results list
         prompt_file = config.get("prompt_file")  # Path to .txt template
         save_intermediate = config.get("save_intermediate_files", False)
-        output_dir = config.get("output_dir", "./outputs")
+        output_dir = self.get_workspace_path(
+            context, config.get("output_dir", "processed_files")
+        )
         suffix = config.get("filename_suffix", "_processed")
         model_name = config.get("model", "default")
         include_original = config.get("include_original_content", True)
@@ -168,7 +170,9 @@ class LLMEnrichmentTask(PipelineTask):
     ) -> WorkflowContext:
         target_key = config.get("target_key", "research_data")
         output_key = config.get("output_key", "enrichment_result")
-        checkpoint_file = config.get("checkpoint_file", "outputs/research.json")
+        checkpoint_file = self.get_workspace_path(
+            context, config.get("checkpoint_file", "research.json")
+        )
 
         target_types = config.get("target_types", [])
         input_fields = config.get("input_fields", ["title", "content"])

@@ -27,7 +27,9 @@ class TextFileSplitterTask(PipelineTask):
         input_file = config.get("input_file")
         output_key = config.get("output_key", "split_docs")
         save_to_disk = config.get("save_to_disk", False)
-        output_dir = config.get("output_dir", "./outputs/split_files")
+        output_dir = self.get_workspace_path(
+            context, config.get("output_dir", "split_files")
+        )
 
         if not input_file or not os.path.exists(input_file):
             raise FileNotFoundError(f"Input file not found: {input_file}")
@@ -131,7 +133,9 @@ class BookDigestTask(PipelineTask):
         input_file = config.get("input_file")
         output_key = config.get("output_key", "digested_chapters")
         save_to_disk = config.get("save_to_disk", False)
-        output_dir = config.get("output_dir", "./outputs/digested_books")
+        output_dir = self.get_workspace_path(
+            context, config.get("output_dir", "digested_books")
+        )
         split_pattern = config.get("split_pattern", r"(?i)(?=Chapter|^# )")
 
         wrap_text = config.get("wrap_text", True)

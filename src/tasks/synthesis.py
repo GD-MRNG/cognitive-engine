@@ -43,7 +43,9 @@ class StrategicSynthesisTask(PipelineTask):
         self, context: WorkflowContext, config: Dict[str, Any]
     ) -> WorkflowContext:
         target_key = config.get("target_key", "research_data")
-        checkpoint_file = config.get("checkpoint_file", "outputs/research.json")
+        checkpoint_file = self.get_workspace_path(
+            context, config.get("checkpoint_file", "research.json")
+        )
 
         group_key = config.get("group_by", "region")
         max_context_chars = config.get("max_context_chars", 0)
@@ -179,9 +181,13 @@ class ReportGenerationTask(PipelineTask):
     def execute(
         self, context: WorkflowContext, config: Dict[str, Any]
     ) -> WorkflowContext:
-        checkpoint_file = config.get("checkpoint_file", "outputs/research.json")
+        checkpoint_file = self.get_workspace_path(
+            context, config.get("checkpoint_file", "research.json")
+        )
         template_file = config.get("template_file", "templates/weekly_report.md.j2")
-        output_dir = config.get("output_dir", "outputs/reports")
+        output_dir = self.get_workspace_path(
+            context, config.get("output_dir", "reports")
+        )
 
         artifact = CheckpointManager.load(checkpoint_file)
         intelligence = artifact.get("intelligence", {})
