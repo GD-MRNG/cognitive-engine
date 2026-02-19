@@ -8,6 +8,7 @@ from src.core.context import WorkflowContext
 from src.core.registry import register_task
 from src.utils.web import WebDriverManager, WebPageExtractor
 from src.utils.youtube import YouTubeExtractor
+from src.utils.audio import AudioExtractor
 from src.utils.io import CheckpointManager
 from src.utils.notifications import DiscordNotifier
 
@@ -306,6 +307,11 @@ class SourceGatheringTask(PipelineTask):
                         logger.info(f"Skipping duplicate: {url}")
                         continue
 
+                    if source.get("format") == "podcast":
+                        if not os.path.exists(url):
+                            logger.error(f"Podcast file not found: {url}. Skipping.")
+                            continue
+
                     self._add_item(current_items, source, url, "analysis")
 
                     # Update Lookup
@@ -369,6 +375,7 @@ class ContentScrapingTask(PipelineTask):
 
         self.web_extractor = WebPageExtractor()
         self.yt_extractor = YouTubeExtractor()
+        self.audio_extractor = AudioExtractor()
 
         updated = False
         logger.info(f"ContentScrapingTask: Processing {len(items)} items.")
@@ -398,6 +405,8 @@ class ContentScrapingTask(PipelineTask):
                             content_result = (
                                 self._scrape_youtube_transcript_with_fallback(url)
                             )
+                    elif fmt == "podcast":
+                        content_result = self._scrape_audio_transcript(url)
                     else:
                         content_result = self._scrape_webpage_with_retry(url)
 
@@ -465,6 +474,13 @@ class ContentScrapingTask(PipelineTask):
         logger.error(f"All transcript extraction methods failed for {url}")
         return ""
 
+    def _scrape_audio_transcript(self, filepath: str) -> str:
+        try:
+            return self.audio_extractor.transcribe(filepath)
+        except Exception as e:
+            logger.warning(f"Audio transcription failed for {filepath}: {e}")
+            return ""
+
     def _scrape_webpage_with_retry(self, url: str) -> str:
         for attempt in range(2):
             try:
@@ -530,6 +546,8 @@ class TitleScrapingTask(PipelineTask):
                     # 3. Routing
                     if fmt == "youtube":
                         fetched_title = yt_extractor.get_video_title(url)
+                    elif fmt == "podcast":
+                        fetched_title = self._format_filename_to_title(url)
                     else:
                         fetched_title = web_extractor.get_webpage_title(url)
 
@@ -554,3 +572,10 @@ class TitleScrapingTask(PipelineTask):
             context.set(target_key, items)
 
         return context
+
+    def _format_filename_to_title(self, filepath: str) -> str:
+        """Converts snake_case or kebab-case filenames to Title Case."""
+        # Get just the filename without the extension
+        base_name = os.path.splitext(os.path.basename(filepath))[0]
+        clean_name = base_name.replace("_", " ").replace("-", " ")
+        return clean_name.title()
