@@ -13,24 +13,6 @@ from src.utils.io import CheckpointManager
 logger = logging.getLogger(__name__)
 
 
-ORDERED_REGIONS = [
-    "Global",
-    "China",
-    "East Asia",
-    "Singapore",
-    "Southeast Asia",
-    "South Asia",
-    "Central Asia",
-    "Russia",
-    "West Asia (Middle East)",
-    "Africa",
-    "Europe",
-    "Latin America & Caribbean",
-    "North America",
-    "Oceania",
-]
-
-
 @register_task("StrategicSynthesisTask")
 class StrategicSynthesisTask(PipelineTask):
     """
@@ -188,6 +170,7 @@ class ReportGenerationTask(PipelineTask):
         output_dir = self.get_workspace_path(
             context, config.get("output_dir", "reports")
         )
+        report_suffix = config.get("report_suffix", "Weekly-Brief")
 
         artifact = CheckpointManager.load(checkpoint_file)
         intelligence = artifact.get("intelligence", {})
@@ -199,16 +182,25 @@ class ReportGenerationTask(PipelineTask):
         env = Environment(loader=FileSystemLoader(os.path.dirname(template_file)))
         template = env.get_template(os.path.basename(template_file))
 
-        today = datetime.datetime.now()
-        report_date = today.strftime("%Y-%m-%d")
-        display_date = today.strftime("%d %B %Y")
+        now = datetime.datetime.now()
+
+        # If before 8:00 AM, pretend it is yesterday to ensure Jekyll publishes immediately
+        if now.hour < 8:
+            logger.info(
+                "Time is before 0800h. Shifting report date to yesterday for Jekyll visibility."
+            )
+            target_date = now - datetime.timedelta(days=1)
+        else:
+            target_date = now
+
+        report_date = target_date.strftime("%Y-%m-%d")
+        display_date = target_date.strftime("%d %B %Y")
 
         try:
             rendered_report = template.render(
                 date=report_date,
                 display_date=display_date,
                 intelligence=intelligence,
-                ordered_regions=ORDERED_REGIONS,
                 to_anchor=lambda x: x.lower()
                 .replace(" ", "-")
                 .replace("&", "")
@@ -217,12 +209,16 @@ class ReportGenerationTask(PipelineTask):
             )
 
             os.makedirs(output_dir, exist_ok=True)
-            filename = f"{output_dir}/{report_date}-Weekly-Brief.md"
+            filename = f"{report_date}-{report_suffix}.md"
+            filepath = os.path.join(output_dir, filename)
 
-            with open(filename, "w", encoding="utf-8") as f:
+            with open(filepath, "w", encoding="utf-8") as f:
                 f.write(rendered_report)
 
-            logger.info(f"Report generated successfully: {filename}")
+            logger.info(f"Report generated successfully: {filepath}")
+
+            # Save the exact filepath to context so the Git task knows what to grab
+            context.set("generated_report_path", filepath)
 
         except Exception as e:
             logger.critical(f"Jinja Rendering Failed: {e}")
