@@ -53,3 +53,23 @@ class CheckpointManager:
 
         except Exception as e:
             logger.error(f"Checkpoint save failed for {filepath}: {e}")
+
+
+class FileManager:
+    """
+    Standardized utility for handling generic file operations (Text, Markdown, HTML).
+    """
+
+    @staticmethod
+    def save_text(filepath: str, content: str) -> None:
+        """
+        Saves text content to a file. Automatically creates missing parent directories.
+        """
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(content)
+            logger.debug(f"Saved file: {filepath}")
+        except Exception as e:
+            logger.error(f"Failed to save file to {filepath}: {e}")
+            raise

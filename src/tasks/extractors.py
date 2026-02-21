@@ -11,65 +11,81 @@ from src.utils.youtube import YouTubeExtractor
 from src.utils.audio import AudioExtractor
 from src.utils.io import CheckpointManager
 from src.utils.notifications import DiscordNotifier
+from src.utils.document import PDFExtractor, EpubExtractor, TextExtractor
+
 
 logger = logging.getLogger(__name__)
 
-# TODO: Refactor or Deprecate this task
 
-# @register_task("ContentExtractionTask")
-# class ContentExtractionTask(PipelineTask):
-#     """
-#     Iterates through a list of CSV items (dict).
-#     Uses 'url' for extraction. Preserves 'title', 'source', 'date'.
-#     """
+@register_task("UniversalExtractorTask")
+class UniversalExtractorTask(PipelineTask):
+    """
+    Fast-lane content extractor. Bypasses metadata/title scraping and checkpoints.
+    Routes URLs/Paths directly to the appropriate utility based on string matching.
+    """
 
-#     def execute(
-#         self, context: WorkflowContext, config: Dict[str, Any]
-#     ) -> WorkflowContext:
-#         input_key = config.get("input_key")
-#         output_key = config.get("output_key")
-#         failure_key = config.get("failure_key", "failed_items")
+    def execute(
+        self, context: WorkflowContext, config: Dict[str, Any]
+    ) -> WorkflowContext:
+        input_key = config.get("input_key")
+        output_key = config.get("output_key", "extracted_docs")
 
-#         items = context.require(input_key)
+        items = context.require(input_key)
 
-#         # Initialize the robust extractor
-#         extractor = ContentExtractor(headless=True)
+        web_ext = WebPageExtractor()
+        yt_ext = YouTubeExtractor()
+        audio_ext = AudioExtractor()
 
-#         success_docs = []
-#         failed_items = []
+        logger.info(
+            f"UniversalExtractorTask: Processing {len(items)} items at high speed..."
+        )
 
-#         logger.info(f"Starting extraction for {len(items)} items...")
+        try:
+            for item in items:
+                url = item["url"]
+                url_lower = url.lower()
+                content = ""
 
-#         try:
-#             for i, item in enumerate(items):
-#                 url = item["url"]
-#                 logger.info(f"[{i+1}/{len(items)}] Processing: {url}")
+                logger.info(f"Extracting: {url}")
 
-#                 try:
-#                     # Robust Extract
-#                     raw_text = extractor.extract(url)
+                try:
+                    if "youtube.com" in url_lower or "youtu.be" in url_lower:
+                        content = self._quick_youtube_fallback(yt_ext, url)
+                    elif url_lower.endswith(".pdf"):
+                        content = "\n\n".join(
+                            PDFExtractor.extract(url, split_chapters=False)
+                        )
+                    elif url_lower.endswith(".epub"):
+                        content = "\n\n".join(
+                            EpubExtractor.extract(url, split_chapters=False)
+                        )
+                    elif url_lower.endswith(".txt"):
+                        content = TextExtractor.extract(url)
+                    elif url_lower.endswith((".mp3", ".wav", ".m4a", ".flac")):
+                        content = audio_ext.transcribe(url)
+                    else:
+                        content = web_ext.get_webpage_content(url)
+                except Exception as e:
+                    logger.error(f"Failed to extract {url}: {e}")
+                    content = f"[Extraction Failed: {e}]"
 
-#                     # Attach CSV Metadata to the Document Object
-#                     doc = {
-#                         "filename": f"{item['source']}_{i}.txt",  # Unique ID
-#                         "content": raw_text,
-#                         "url": url,
-#                         "title": item["title"],
-#                         "source": item["source"],
-#                         "date": item["date"],
-#                         "source_type": "text_queue_automated",
-#                     }
-#                     success_docs.append(doc)
+                item["content"] = content
 
-#                 except Exception as e:
-#                     logger.warning(f"Failed to extract {url}: {e}")
-#                     failed_items.append(item)
-#         finally:
-#             extractor.close()
+        finally:
+            WebDriverManager().quit_driver()
 
-#         context.set(output_key, success_docs)
-#         context.set(failure_key, failed_items)
-#         return context
+        context.set(output_key, items)
+        return context
+
+    def _quick_youtube_fallback(self, yt_ext, url: str) -> str:
+        """Condensed fallback logic for fast YouTube fetching."""
+        try:
+            return yt_ext.get_video_transcript_paid_api(url)
+        except Exception:
+            try:
+                return yt_ext.get_video_transcript_free_api(url)
+            except Exception:
+                return yt_ext.get_video_transcript_tactiq(url)
 
 
 @register_task("ManualReviewTask")

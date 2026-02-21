@@ -7,7 +7,7 @@ from src.core.interfaces import PipelineTask
 from src.core.context import WorkflowContext
 from src.core.registry import register_task
 from src.core.llm import get_llm_client
-from src.utils.io import CheckpointManager
+from src.utils.io import CheckpointManager, FileManager
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +71,9 @@ class BatchLLMTask(PipelineTask):
     def execute(
         self, context: WorkflowContext, config: Dict[str, Any]
     ) -> WorkflowContext:
-        # 1. Configuration Extraction
-        input_key = config.get("input_key")  # Key containing list of file dicts
-        output_key = config.get("output_key")  # Key to store results list
-        prompt_file = config.get("prompt_file")  # Path to .txt template
+        input_key = config.get("input_key")
+        output_key = config.get("output_key")
+        prompt_file = config.get("prompt_file")
         save_intermediate = config.get("save_intermediate_files", False)
         output_dir = self.get_workspace_path(
             context, config.get("output_dir", "processed_files")
@@ -83,26 +82,21 @@ class BatchLLMTask(PipelineTask):
         model_name = config.get("model", "default")
         include_original = config.get("include_original_content", True)
 
-        # 2. Validation
         if not input_key or not output_key or not prompt_file:
             raise ValueError(
                 "BatchLLMTask requires 'input_key', 'output_key', and 'prompt_file'."
             )
 
-        # 3. Load Resources
         inputs = context.require(input_key)  # Expecting List[Dict] from DirectoryLoader
 
-        # Read the prompt template
         if not os.path.exists(prompt_file):
             raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
         with open(prompt_file, encoding="utf-8") as f:
             prompt_template = f.read()
 
-        # Initialize LLM
         llm_client = get_llm_client(config)
         results = []
 
-        # 4. Processing Loop
         logger.info(f"BatchLLMTask starting processing for {len(inputs)} items...")
 
         os.makedirs(output_dir, exist_ok=True)
@@ -110,52 +104,40 @@ class BatchLLMTask(PipelineTask):
         current_date = datetime.datetime.now().strftime("%d-%m-%Y")
 
         for item in inputs:
-            original_filename = item.get("filename", "unknown")
+            original_source = item.get("source", "unknown_source")
             content = item.get("content", "")
 
-            logger.info(f"Processing item: {original_filename}")
-
-            # A. Prepare Prompt
-            # We assume the template uses {content} as the placeholder
             final_prompt = prompt_template.format(content=content)
 
-            # B. Call LLM
             try:
                 llm_output = llm_client.query(final_prompt, model=model_name)
             except Exception as e:
-                logger.error(f"LLM failure for {original_filename}: {e}")
-                llm_output = f"[Error processing {original_filename}]"
+                logger.error(f"LLM failure for {original_source}: {e}")
+                llm_output = f"[Error processing {original_source}]"
 
-            # C. Combine for Output
             metadata_section = (
                 f"## Metadata\n"
                 f"- **Date:** {current_date}\n"
-                f"- **Source:** {original_filename}\n"
+                f"- **Source:** {original_source}\n"
                 f"- **Model:** {model_name}\n"
                 f"- **Prompt:** {prompt_file}\n\n"
             )
 
+            processed_content = (
+                f"{metadata_section}## LLM Processed Content\n\n{llm_output}"
+            )
             if include_original:
-                processed_content = f"{metadata_section}## LLM Processed Content\n\n{llm_output}\n\n---\n\n## Original Content\n\n{content}"
-            else:
-                processed_content = (
-                    f"{metadata_section}## LLM Processed Content\n\n{llm_output}"
-                )
+                processed_content += f"\n\n---\n\n## Original Content\n\n{content}"
 
-            # D. Save Intermediate File (optional)
             if save_intermediate:
-                base_name = os.path.splitext(original_filename)[0]
-                out_filename = f"{base_name}{suffix}.md"
-                out_path = os.path.join(output_dir, out_filename)
+                safe_base = "".join(
+                    c for c in original_source if c.isalnum() or c in ("_", "-")
+                ).strip()
+                out_path = os.path.join(output_dir, f"{safe_base}{suffix}.md")
+                FileManager.save_text(out_path, processed_content)
 
-                with open(out_path, "w", encoding="utf-8") as f:
-                    f.write(processed_content)
-                logger.info(f"Saved intermediate file: {out_path}")
-
-            # E. Store result in memory
             results.append(processed_content)
 
-        # 5. Update Context
         context.set(output_key, results)
         return context
 
