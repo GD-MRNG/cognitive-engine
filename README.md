@@ -65,7 +65,7 @@ For a deeper understanding of how the platform works and how to configure it, pl
 - **[Architecture Overview](docs/ARCHITECTURE.md)**  
   High-level design, core concepts, and system diagram.
 
-- **[Workflow Configuration Guide](docs/WORKFLOW_GUIDE.md)**  
+- **[Workflow Configuration Guide](docs/WORKFLOW_CONFIGURATION_GUIDE.md)**  
   Detailed guide on writing YAML workflows with examples.
 
 ---
