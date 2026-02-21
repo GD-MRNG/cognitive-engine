@@ -3,6 +3,8 @@ outputs/
 inputs/
 workflows/
 prompts/
+cognitive_assets/
+templates/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

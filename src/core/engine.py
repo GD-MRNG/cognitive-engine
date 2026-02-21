@@ -13,18 +13,23 @@ import src.tasks.transformers  # noqa: F401
 import src.tasks.aggregators  # noqa: F401
 import src.tasks.writers  # noqa: F401
 import src.tasks.splitters  # noqa: F401
-import src.tasks.audio  # noqa: F401
 import src.tasks.extractors  # noqa: F401
 import src.tasks.utilities  # noqa: F401
+import src.tasks.notifications  # noqa: F401
+import src.tasks.synthesis  # noqa: F401
+import src.tasks.delivery  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
 
 class WorkflowEngine:
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, workspace_dir: str):
         self.config_path = config_path
         self.workflow_config = self._load_config()
         self.context = WorkflowContext()
+        self.workspace_dir = workspace_dir
+
+        self.context.set("_workspace_dir", self.workspace_dir)
 
     def _load_config(self) -> Dict[str, Any]:
         if not os.path.exists(self.config_path):

@@ -1,219 +1,180 @@
 import logging
-import time
-import os
-import re
-from bs4 import BeautifulSoup
+import atexit
 from selenium import webdriver
-from selenium.webdriver.firefox.options import Options as FirefoxOptions
-from selenium.webdriver.common.by import By
+from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
-
-from src.utils.youtube import YouTubeHandler
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
+from selenium.common.exceptions import TimeoutException
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
 
-class ContentExtractor:
+class WebDriverManager:
     """
-    The Unified Extractor.
-    - Handles Web (Selenium + BS4 Clean)
-    - Handles YouTube (Paid -> Free -> Tactiq -> Manual Failover)
-    - Manages Memory (Driver Rotation)
-    - Centralized Retry Configuration
+    Singleton to manage a single Firefox instance.
     """
 
-    DRIVER_RESET_THRESHOLD = 25
+    _instance = None
 
-    def __init__(self, headless: bool = True):
-        self.headless = headless
-        self.driver = None
-        self.request_count = 0
-        self.yt_handler = YouTubeHandler()
+    def __new__(cls):
+        if not cls._instance:
+            cls._instance = super().__new__(cls)
+            cls._instance.driver = None
+            cls._instance.fetch_count = 0
+            cls._instance.RESET_THRESHOLD = 10
+            cls._instance.current_headless_mode = True  # Default state
 
-        # --- Centralized Retry Configuration ---
+            atexit.register(cls._instance.quit_driver)
 
-        self.max_retries = 2
-        self.retry_delays = [1, 2]
+        return cls._instance
 
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-
-    # --- Driver Lifecycle ---
-
-    def _init_driver(self):
-        if self.driver:
-            try:
-                self.driver.quit()
-            except Exception:
-                pass
-
-        logger.info(f"Initializing Firefox WebDriver (Headless: {self.headless})...")
-        options = FirefoxOptions()
-        if self.headless:
-            options.add_argument("--headless")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-
-        self.driver = webdriver.Firefox(options=options)
-        self.request_count = 0
-        return self.driver
-
-    def _get_driver(self):
-        if self.driver is None or self.request_count >= self.DRIVER_RESET_THRESHOLD:
-            self._init_driver()
-        return self.driver
-
-    def close(self):
-        if self.driver:
-            self.driver.quit()
-            self.driver = None
-
-    def open_page_for_user(self, url: str):
+    def get_driver(self, headless: bool = True):
         """
-        FAILOVER TOOL: Launches a VISIBLE browser for the user to see the page.
+        Returns the WebDriver instance.
+        Restarts the driver if the requested 'headless' mode differs from the active one.
         """
-        logger.info("Switching to Visible Mode for manual review...")
-        if self.headless:
-            if self.driver:
-                self.driver.quit()
-            self.driver = None
-            self.headless = False
+        # Check if we need to switch modes
+        if self.driver is not None and self.current_headless_mode != headless:
+            logger.info(
+                f"Switching Driver Mode (Headless: {self.current_headless_mode} -> {headless}). Restarting..."
+            )
+            self.quit_driver()
 
-        driver = self._get_driver()
-        driver.get(url)
+        if self.driver and self.fetch_count >= self.RESET_THRESHOLD:
+            logger.info(
+                f"Global reset threshold ({self.RESET_THRESHOLD}) reached. Rotating Driver."
+            )
+            self.quit_driver()
 
-    # --- Main Entry Point ---
+        if not self.driver:
+            self.current_headless_mode = headless  # Update state
+            mode_str = "Headless" if headless else "UI (Visible)"
+            logger.info(f"Initializing Firefox WebDriver in {mode_str} mode...")
 
-    def extract(self, url_or_path: str) -> str:
-        self.request_count += 1
+            options = Options()
+            if headless:
+                options.add_argument("-headless")
+                options.set_preference("permissions.default.image", 2)  # Disable images
 
-        # 1. Local File
-        if os.path.exists(url_or_path):
-            return self._read_local_file(url_or_path)
+            # Optimization preferences
+            options.set_preference("browser.display.use_document_fonts", 0)
+            options.set_preference("media.autoplay.default", 5)
+            options.set_preference("media.autoplay.blocking_policy", 2)
+            options.set_preference("media.volume_scale", "0.0")
+            options.set_preference("network.prefetch-next", False)
+            options.set_preference("network.dns.disablePrefetch", True)
+            options.set_preference("dom.ipc.plugins.enabled.libflashplayer.so", "false")
+            options.set_preference("browser.safebrowsing.malware.enabled", False)
+            options.set_preference("browser.safebrowsing.phishing.enabled", False)
 
-        # 2. YouTube
-        if "youtube.com" in url_or_path or "youtu.be" in url_or_path:
-            return self._extract_youtube(url_or_path)
-
-        # 3. Web Page
-        return self._extract_web(url_or_path)
-
-    # --- Helpers ---
-
-    def _clean_html_content(self, html_content: str) -> str:
-        soup = BeautifulSoup(html_content, "html.parser")
-        for script_or_style in soup(
-            [
-                "script",
-                "style",
-                "noscript",
-                "header",
-                "footer",
-                "nav",
-                "aside",
-                "iframe",
-            ]
-        ):
-            script_or_style.decompose()
-        text = soup.get_text(separator=" ", strip=True)
-        text = re.sub(r"\s+", " ", text)
-        return text.strip()
-
-    def _read_local_file(self, path: str) -> str:
-        try:
-            with open(path, encoding="utf-8") as f:
-                return f.read()
-        except Exception as e:
-            raise RuntimeError(f"Failed to read local file: {e}")
-
-    def _get_delay(self, attempt_index: int) -> int:
-        if attempt_index < len(self.retry_delays):
-            return self.retry_delays[attempt_index]
-        return 2
-
-    # --- Extraction Strategies ---
-
-    def _extract_youtube(self, url: str) -> str:
-        video_id = self.yt_handler.extract_video_id(url)
-        if not video_id:
-            raise ValueError("Invalid YouTube URL")
-
-        # # Tier 0: Paid API
-        for attempt in range(self.max_retries + 1):
-            text = self.yt_handler.get_transcript_paid(video_id)
-            if text:
-                logger.info(
-                    f"YouTube extraction success (Tier 0: Paid API, Attempt {attempt+1})"
-                )
-                return f"Source: YouTube (Paid API)\n\n{text}"
-
-            if attempt < self.max_retries:
-                time.sleep(self._get_delay(attempt))
-
-        # Tier 1: Free API
-        for attempt in range(self.max_retries + 1):
-            text = self.yt_handler.get_transcript_free(video_id)
-            if text:
-                logger.info(
-                    f"YouTube extraction success (Tier 2: Free API, Attempt {attempt+1})"
-                )
-                return f"Source: YouTube (Free API)\n\n{text}"
-
-            if attempt < self.max_retries:
-                time.sleep(self._get_delay(attempt))
-
-        # Tier 2: Selenium Tactiq
-        for attempt in range(self.max_retries + 1):
             try:
-                driver = self._get_driver()
-                text = self.yt_handler.get_transcript_tactiq(driver, url)
-                if text:
-                    logger.info(
-                        f"YouTube extraction success (Tier 1: Tactiq, Attempt {attempt+1})"
-                    )
-                    return f"Source: YouTube (Tactiq)\n\n{text}"
+                self.driver = webdriver.Firefox(options=options)
+                self.fetch_count = 0
+                logger.info(f"Firefox WebDriver initialized ({mode_str}).")
             except Exception as e:
-                logger.warning(f"Tactiq attempt {attempt+1} failed: {e}")
-                self._init_driver()
+                logger.critical(f"Failed to initialize Firefox WebDriver: {e}")
+                raise
 
-            if attempt < self.max_retries:
-                time.sleep(self._get_delay(attempt))
+        self.fetch_count += 1
+        return self.driver
 
-        # This ensures the Task catches it and moves the item to the Failed queue.
-        raise RuntimeError("YouTube Automated Extraction Failed (All Tiers).")
-
-    def _extract_web(self, url: str) -> str:
-        """
-        Extracts webpage content using Selenium + BS4.
-        """
-        for attempt in range(self.max_retries + 1):
+    def quit_driver(self):
+        if self.driver:
+            logger.info("Quitting Firefox WebDriver...")
             try:
-                if attempt > 0:
-                    logger.info(
-                        f"Webpage Retry {attempt + 1}/{self.max_retries + 1}..."
-                    )
+                self.driver.quit()
+            except Exception as e:
+                logger.error(f"Error during WebDriver quit: {e}")
+            finally:
+                self.driver = None
+                self.fetch_count = 0
 
-                driver = self._get_driver()
+
+class WebPageExtractor:
+    """
+    Webpage content extraction tools.
+    """
+
+    def __init__(self):
+        self.manager = WebDriverManager()
+
+    def _ensure_page_loaded(self, url: str):
+        """Helper to navigate only if not already on the page."""
+        driver = self.manager.get_driver()
+        if driver.current_url != url:
+            logger.info(f"Navigating to URL: {url}")
+            try:
                 driver.get(url)
-
-                WebDriverWait(driver, 20).until(
-                    lambda d: d.find_element(By.TAG_NAME, "body").text.strip() != ""
+                WebDriverWait(driver, 30).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
                 )
-
-                html = driver.page_source
-                cleaned_text = self._clean_html_content(html)
-
-                if cleaned_text:
-                    logger.info(f"Webpage extraction successful on attempt {attempt+1}")
-                    return f"Source: Web (Selenium)\n\n{cleaned_text}"
-
+                logger.debug("Page body loaded successfully.")
+            except TimeoutException:
+                logger.error(f"Timeout waiting for page to load: {url}")
+                raise RuntimeError(f"Timeout loading {url}")
             except Exception as e:
-                logger.warning(f"Webpage attempt {attempt + 1} failed: {e}")
-                self._init_driver()
+                logger.error(f"Failed to navigate to {url}: {e}")
+                raise RuntimeError(f"Navigation failed: {e}")
 
-            if attempt < self.max_retries:
-                time.sleep(self._get_delay(attempt))
+    def get_webpage_content(self, url: str) -> str:
+        """
+        Extracts main content text using BeautifulSoup.
+        Raises RuntimeError if content is empty.
+        """
+        logger.info(f"Starting content extraction for: {url}")
+        self._ensure_page_loaded(url)
+        driver = self.manager.get_driver()
+        page_source = driver.page_source
 
-        # This ensures the Task catches it and moves the item to the Failed queue.
-        raise RuntimeError(f"All webpage extraction attempts failed for {url}")
+        soup = BeautifulSoup(page_source, "html.parser")
+
+        # Remove obvious junk tags
+        # nav: menus | footer: bottom links | aside: sidebars | script/style: code
+        for tag in soup(
+            ["nav", "footer", "header", "aside", "script", "style", "noscript", "form"]
+        ):
+            tag.decompose()
+
+        content = soup.get_text(separator="\n", strip=True)
+
+        if not content:
+            logger.error(f"Extraction failed. No content found for {url}")
+            raise RuntimeError(f"Failed to extract meaningful content from {url}")
+
+        logger.info(f"Successfully extracted {len(content)} characters from {url}")
+        return content
+
+    def get_webpage_title(self, url: str) -> str:
+        """
+        Extracts the best possible title (OG Tag > Title Tag > H1).
+        Raises RuntimeError if no title is found.
+        """
+        logger.info(f"Starting title extraction for: {url}")
+        self._ensure_page_loaded(url)
+        driver = self.manager.get_driver()
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+
+        # Priority 1: OpenGraph
+        og_title = soup.find("meta", property="og:title")
+        if og_title and og_title.get("content"):
+            title = og_title["content"].strip()
+            logger.info(f"Found OpenGraph title: {title}")
+            return title
+
+        # Priority 2: Standard Title
+        if driver.title and driver.title.strip():
+            title = driver.title.strip()
+            logger.info(f"Found standard page title: {title}")
+            return title
+
+        # Priority 3: H1
+        h1 = soup.find("h1")
+        if h1:
+            title = h1.get_text(strip=True)
+            logger.info(f"Found H1 title: {title}")
+            return title
+
+        logger.error(f"Title extraction failed for {url}")
+        raise RuntimeError(f"Could not determine title for {url}")

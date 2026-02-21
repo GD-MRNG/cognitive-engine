@@ -1,10 +1,10 @@
 import logging
-import os
 from typing import Dict, Any
 
 from src.core.interfaces import PipelineTask
 from src.core.context import WorkflowContext
 from src.core.registry import register_task
+from src.utils.io import FileManager
 
 logger = logging.getLogger(__name__)
 
@@ -22,14 +22,12 @@ class TextAggregator(PipelineTask):
         input_key = config.get("input_key")
         output_key = config.get("output_key")
         separator = config.get("separator", "\n\n---\n\n")
-        save_path = config.get(
-            "save_to_file"
-        )  # Optional: Save the combined text immediately
+
+        save_filename = config.get("save_to_file")
 
         if not input_key or not output_key:
             raise ValueError("TextAggregator requires 'input_key' and 'output_key'.")
 
-        # Get the list of strings (produced by BatchLLMTask)
         data_list = context.require(input_key)
 
         if not isinstance(data_list, list):
@@ -39,38 +37,54 @@ class TextAggregator(PipelineTask):
 
         logger.info(f"Aggregating {len(data_list)} items...")
 
-        # Join them
         combined_text = separator.join([str(item) for item in data_list])
 
-        # Save to context
         context.set(output_key, combined_text)
 
-        # Optional: Save to disk (handles the "combined.md" requirement)
-        if save_path:
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            with open(save_path, "w", encoding="utf-8") as f:
-                f.write(combined_text)
-            logger.info(f"Saved combined text to {save_path}")
+        if save_filename:
+            out_path = self.get_workspace_path(context, save_filename)
+            FileManager.save_text(out_path, combined_text)
 
         return context
 
 
 @register_task("CitationCompilerTask")
 class CitationCompilerTask(PipelineTask):
+    """
+    Compiles a bibliography section by iterating through document metadata.
+    Only displays fields that actually contain data.
+    """
+
     def execute(
         self, context: WorkflowContext, config: Dict[str, Any]
     ) -> WorkflowContext:
         docs = context.require(config.get("input_key"))
-        lines = ["## Sources"]
+        lines = ["## Sources Referenced\n"]
 
         for i, doc in enumerate(docs):
-            title = doc.get("title", "Unknown Title")
-            source = doc.get("source", "Unknown Source")
-            date = doc.get("date", "Unknown Date")
-            url = doc.get("url", "#")
+            url = doc.get("url", "").strip()
+            title = doc.get("title", "").strip()
+            source = doc.get("source", "").strip()
+            date = doc.get("date", "").strip()
 
-            # Format: 1. [Title](Link), Source, Date
-            lines.append(f"{i+1}. [{title}]({url}), {source}, {date}")
+            source_info = []
+
+            if title:
+                source_info.append(f"**Title:** {title}")
+
+            # Prevent printing the URL twice if 'source' defaulted to the URL earlier
+            if source and source != url:
+                source_info.append(f"**Source:** {source}")
+
+            if date:
+                source_info.append(f"**Date:** {date}")
+
+            if url:
+                source_info.append(f"**URL:** {url}")
+
+            # Join whatever parts we collected with a separator
+            entry = f"{i+1}. " + " ".join(source_info)
+            lines.append(entry)
 
         context.set(config.get("output_key"), "\n".join(lines))
         return context
