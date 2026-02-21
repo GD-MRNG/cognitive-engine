@@ -66,10 +66,11 @@ pre-commit install
 
 For a deeper understanding of how the platform works and how to configure it, please refer to the documentation located in the `docs/` folder:
 
-* **[Architecture Overview](https://www.google.com/search?q=docs/ARCHITECTURE.md)**
-High-level design, core concepts, and system diagram.
-* **[Workflow Configuration Guide](https://www.google.com/search?q=docs/WORKFLOW_GUIDE.md)**
-Detailed guide on writing YAML workflows with examples.
+- **[Architecture Overview](docs/ARCHITECTURE.md)**  
+  High-level design, core concepts, and system diagram.
+
+- **[Workflow Configuration Guide](docs/WORKFLOW_CONFIGURATION_GUIDE.md)**  
+  Detailed guide on writing YAML workflows with examples.
 
 ---
 
