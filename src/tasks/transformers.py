@@ -295,6 +295,11 @@ class RegionCategorizationTask(LLMEnrichmentTask):
         "australia": "Oceania",
         "latin america": "Latin America & Caribbean",
         "caribbean": "Latin America & Caribbean",
+        "south america": "Latin America & Caribbean",
+        "the americas": "North America",
+        "asia": "East Asia",
+        "unknown": "Global",
+        "global": "Global",
     }
 
     def _post_process_response(self, text: str) -> str:
