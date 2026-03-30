@@ -197,6 +197,14 @@ class LLMEnrichmentTask(PipelineTask):
             limit_per_field = int(max_chars / len(input_fields))
 
         for item in items:
+            if item.get("format", "").lower() == "manual":
+                logger.info(
+                    f"Skipping LLM enrichment ({output_key}) for manual item: {item.get('url')}"
+                )
+                # Initialize the key so HITL catches it as empty
+                item.setdefault(output_key, "")
+                continue
+
             if target_types and item.get("type") not in target_types:
                 continue
 
