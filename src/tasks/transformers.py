@@ -197,14 +197,6 @@ class LLMEnrichmentTask(PipelineTask):
             limit_per_field = int(max_chars / len(input_fields))
 
         for item in items:
-            if item.get("format", "").lower() == "manual":
-                logger.info(
-                    f"Skipping LLM enrichment ({output_key}) for manual item: {item.get('url')}"
-                )
-                # Initialize the key so HITL catches it as empty
-                item.setdefault(output_key, "")
-                continue
-
             if target_types and item.get("type") not in target_types:
                 continue
 
@@ -321,11 +313,11 @@ class RegionCategorizationTask(LLMEnrichmentTask):
             if cat.lower() == cleaned_lower:
                 return cat
 
-        # Fallback: Return empty string so ManualReviewTask catches it
         logger.warning(
-            f"RegionCategorizationTask: Invalid category '{cleaned}'. Returning empty for manual fix."
+            f"RegionCategorizationTask: Invalid category '{cleaned}' returned."
         )
-        return ""
+        # Default to 'Global' if unrecognized, as it's the most inclusive category
+        return "Global"
 
 
 @register_task("SummarizationTask")
