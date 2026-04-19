@@ -300,6 +300,7 @@ class RegionCategorizationTask(LLMEnrichmentTask):
         "asia": "East Asia",
         "unknown": "Global",
         "global": "Global",
+        "russia & former soviet union": "Russia",
     }
 
     def _post_process_response(self, text: str) -> str:
