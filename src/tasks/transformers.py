@@ -81,6 +81,7 @@ class BatchLLMTask(PipelineTask):
         suffix = config.get("filename_suffix", "_processed")
         model_name = config.get("model", "default")
         include_original = config.get("include_original_content", True)
+        pass_previous_output = config.get("pass_previous_output", False)
 
         if not input_key or not output_key or not prompt_file:
             raise ValueError(
@@ -102,14 +103,21 @@ class BatchLLMTask(PipelineTask):
         os.makedirs(output_dir, exist_ok=True)
 
         current_date = datetime.datetime.now().strftime("%d-%m-%Y")
+        previous_output = ""
 
         for item in inputs:
             original_source = item.get("source", "unknown_source")
             content = item.get("content", "")
 
-            final_prompt = prompt_template.format(content=content)
+            if pass_previous_output:
+                final_prompt = prompt_template.format(content=content, previous_output=previous_output)
+            else:
+                final_prompt = prompt_template.format(content=content)
 
             llm_output = llm_client.query(final_prompt, model=model_name)
+
+            if pass_previous_output:
+                previous_output = llm_output
 
             metadata_section = (
                 f"## Metadata\n"
