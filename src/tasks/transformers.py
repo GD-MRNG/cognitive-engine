@@ -154,6 +154,7 @@ class LLMEnrichmentTask(PipelineTask):
 
         target_types = config.get("target_types", [])
         input_fields = config.get("input_fields", ["title", "content"])
+        force_refresh = config.get("force_refresh", False)
 
         max_chars = config.get("max_chars", 3000)
 
@@ -196,7 +197,7 @@ class LLMEnrichmentTask(PipelineTask):
             if target_types and item.get("type") not in target_types:
                 continue
 
-            if item.get(output_key):
+            if not force_refresh and item.get(output_key):
                 continue
 
             # Build Context
