@@ -59,7 +59,7 @@ class UniversalExtractorTask(PipelineTask):
                         content = "\n\n".join(
                             EpubExtractor.extract(url, split_chapters=False)
                         )
-                    elif url_lower.endswith(".txt"):
+                    elif url_lower.endswith((".txt", ".md")):
                         content = TextExtractor.extract(url)
                     elif url_lower.endswith((".mp3", ".wav", ".m4a", ".flac")):
                         content = audio_ext.transcribe(url)
