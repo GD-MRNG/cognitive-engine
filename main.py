@@ -5,6 +5,7 @@ import os
 import datetime
 from dotenv import load_dotenv
 from src.core.engine import WorkflowEngine
+from src.utils.notifications import DiscordNotifier
 
 load_dotenv()
 
@@ -81,6 +82,10 @@ def main():
         engine.run()
     except Exception as e:
         logger.critical(f"Fatal error during execution: {e}", exc_info=True)
+        DiscordNotifier().send(
+            f"Workflow `{args.workflow}` failed: {e}",
+            level="error",
+        )
         sys.exit(1)
 
 
