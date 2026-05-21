@@ -7,7 +7,6 @@ from typing import Dict, Any
 
 import openai
 from langchain_community.llms import Ollama
-import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +29,6 @@ class MockLLMClient(BaseLLMClient):
 
 class ProductionLLMClient(BaseLLMClient):
     DEFAULT_POE_MODEL = "gemini-3-flash"
-    DEFAULT_GEMINI_MODEL = "gemini-3-flash"
     DEFAULT_OLLAMA_MODEL = "qwen2.5:14b"
     DEFAULT_FALLBACK_MODEL = "deepseek-r1:8b"
 
@@ -68,13 +66,6 @@ class ProductionLLMClient(BaseLLMClient):
             self.client = openai.OpenAI(
                 api_key=api_key, base_url="https://api.poe.com/v1"
             )
-
-        elif self.provider == "gemini":
-            api_key = os.getenv("GEMINI_API_KEY")
-            if not api_key:
-                logger.error("GEMINI_API_KEY not found in environment variables.")
-                raise ValueError("Missing GEMINI_API_KEY")
-            genai.configure(api_key=api_key)
 
         elif self.provider == "ollama":
             pass
@@ -139,8 +130,6 @@ class ProductionLLMClient(BaseLLMClient):
     def _query_primary_provider(self, prompt: str, model: str) -> str:
         if self.provider == "poe":
             return self._query_poe(prompt, model)
-        elif self.provider == "gemini":
-            return self._query_gemini(prompt, model)
         elif self.provider == "ollama":
             return self._query_ollama(prompt, model)
         else:
@@ -155,13 +144,6 @@ class ProductionLLMClient(BaseLLMClient):
             temperature=0.0,
         )
         return self._clean_llm_output(response.choices[0].message.content)
-
-    def _query_gemini(self, prompt: str, model: str) -> str:
-        target_model = model if model != "default" else self.DEFAULT_GEMINI_MODEL
-        logger.info(f"Querying Google Gemini with model: {target_model}")
-        model_instance = genai.GenerativeModel(target_model)
-        response = model_instance.generate_content(prompt)
-        return self._clean_llm_output(response.text)
 
     def _query_ollama(self, prompt: str, model: str) -> str:
         target_model = model if model != "default" else self.DEFAULT_OLLAMA_MODEL
