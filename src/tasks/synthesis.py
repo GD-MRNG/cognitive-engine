@@ -93,16 +93,12 @@ class StrategicSynthesisTask(PipelineTask):
             logger.info(
                 "StrategicSynthesisTask: Generating Global Executive Summary..."
             )
-            try:
-                prompt = global_template.format(
-                    global_trends=global_trends_text,
-                    all_analysis_briefs=all_analysis_text,
-                )
-                global_summary = llm_client.query(prompt, model=config.get("model"))
-                intelligence["Global_Executive_Summary"] = global_summary
-            except Exception as e:
-                logger.error(f"Global Summary Failed: {e}")
-                intelligence["Global_Executive_Summary"] = "Generation Failed."
+            prompt = global_template.format(
+                global_trends=global_trends_text,
+                all_analysis_briefs=all_analysis_text,
+            )
+            global_summary = llm_client.query(prompt, model=config.get("model"))
+            intelligence["Global_Executive_Summary"] = global_summary
 
         # --- 5. Category Assessments ---
         for category_name, category_items in grouped_items.items():
@@ -134,19 +130,15 @@ class StrategicSynthesisTask(PipelineTask):
                 cat_text_list.append(txt)
             category_intel_text = "\n\n---\n\n".join(cat_text_list)
 
-            try:
-                prompt = category_template.format(
-                    category_name=category_name,
-                    global_summary=intelligence.get("Global_Executive_Summary", ""),
-                    category_intel=category_intel_text,
-                )
-                assessment = llm_client.query(prompt, model=config.get("model"))
+            prompt = category_template.format(
+                category_name=category_name,
+                global_summary=intelligence.get("Global_Executive_Summary", ""),
+                category_intel=category_intel_text,
+            )
+            assessment = llm_client.query(prompt, model=config.get("model"))
 
-                intelligence[category_name]["assessment"] = assessment
-                intelligence[category_name]["articles"] = category_items
-
-            except Exception as e:
-                logger.error(f"Assessment failed for {category_name}: {e}")
+            intelligence[category_name]["assessment"] = assessment
+            intelligence[category_name]["articles"] = category_items
 
         artifact["intelligence"] = intelligence
         CheckpointManager.save(checkpoint_file, artifact)

@@ -109,11 +109,7 @@ class BatchLLMTask(PipelineTask):
 
             final_prompt = prompt_template.format(content=content)
 
-            try:
-                llm_output = llm_client.query(final_prompt, model=model_name)
-            except Exception as e:
-                logger.error(f"LLM failure for {original_source}: {e}")
-                llm_output = f"[Error processing {original_source}]"
+            llm_output = llm_client.query(final_prompt, model=model_name)
 
             metadata_section = (
                 f"## Metadata\n"
@@ -158,6 +154,7 @@ class LLMEnrichmentTask(PipelineTask):
 
         target_types = config.get("target_types", [])
         input_fields = config.get("input_fields", ["title", "content"])
+        force_refresh = config.get("force_refresh", False)
 
         max_chars = config.get("max_chars", 3000)
 
@@ -200,7 +197,7 @@ class LLMEnrichmentTask(PipelineTask):
             if target_types and item.get("type") not in target_types:
                 continue
 
-            if item.get(output_key):
+            if not force_refresh and item.get(output_key):
                 continue
 
             # Build Context
@@ -222,21 +219,17 @@ class LLMEnrichmentTask(PipelineTask):
 
             merged_context = "\n\n".join(combined_parts)
 
-            try:
-                final_prompt = prompt_template.format(content=merged_context)
+            final_prompt = prompt_template.format(content=merged_context)
 
-                response = llm_client.query(final_prompt, model=model_name)
+            response = llm_client.query(final_prompt, model=model_name)
 
-                cleaned_response = self._post_process_response(response)
+            cleaned_response = self._post_process_response(response)
 
-                item[output_key] = cleaned_response
-                updated = True
+            item[output_key] = cleaned_response
+            updated = True
 
-                artifact[target_key] = items
-                CheckpointManager.save(checkpoint_file, artifact)
-
-            except Exception as e:
-                logger.error(f"LLM Enrichment failed for {item.get('url')}: {e}")
+            artifact[target_key] = items
+            CheckpointManager.save(checkpoint_file, artifact)
 
         if updated:
             context.set(target_key, items)
@@ -295,6 +288,12 @@ class RegionCategorizationTask(LLMEnrichmentTask):
         "australia": "Oceania",
         "latin america": "Latin America & Caribbean",
         "caribbean": "Latin America & Caribbean",
+        "south america": "Latin America & Caribbean",
+        "the americas": "North America",
+        "asia": "East Asia",
+        "unknown": "Global",
+        "global": "Global",
+        "russia & former soviet union": "Russia",
     }
 
     def _post_process_response(self, text: str) -> str:
@@ -308,11 +307,11 @@ class RegionCategorizationTask(LLMEnrichmentTask):
             if cat.lower() == cleaned_lower:
                 return cat
 
-        # Fallback: Return empty string so ManualReviewTask catches it
         logger.warning(
-            f"RegionCategorizationTask: Invalid category '{cleaned}'. Returning empty for manual fix."
+            f"RegionCategorizationTask: Invalid category '{cleaned}' returned."
         )
-        return ""
+        # Default to 'Global' if unrecognized, as it's the most inclusive category
+        return "Global"
 
 
 @register_task("SummarizationTask")

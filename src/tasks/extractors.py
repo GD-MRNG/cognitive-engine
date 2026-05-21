@@ -420,7 +420,14 @@ class ContentScrapingTask(PipelineTask):
                 try:
                     content_result = ""
 
-                    if fmt == "youtube":
+                    if fmt == "manual":
+                        logger.info(
+                            f"Skipping automated scrape for manual item: {item.get('url')}"
+                        )
+                        # Initialize the key so HITL catches it as empty
+                        item.setdefault("content", "")
+                        continue
+                    elif fmt == "youtube":
                         if typ == "datapoint":
                             content_result = self._scrape_youtube_headlines(url)
                         else:
@@ -568,7 +575,14 @@ class TitleScrapingTask(PipelineTask):
 
                 try:
                     # 3. Routing
-                    if fmt == "youtube":
+                    if fmt == "manual":
+                        logger.info(
+                            f"Skipping automated scrape for manual item: {item.get('url')}"
+                        )
+                        # Ensure the keys exist so HITL doesn't throw a KeyError later
+                        item.setdefault("title", "")
+                        continue
+                    elif fmt == "youtube":
                         fetched_title = yt_extractor.get_video_title(url)
                     elif fmt == "podcast":
                         fetched_title = self._format_filename_to_title(url)

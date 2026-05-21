@@ -1,0 +1,14 @@
+{
+  "model": "sonnet",
+  "alwaysThinkingEnabled": true,
+  "permissions": {
+    "deny": [
+      "Bash(**/.env)",
+      "Read(**/.env)",
+      "Write(**/.env)"
+    ]
+  },
+  "env": {
+    "CLAUDE_CODE_HIDE_ACCOUNT_INFO": "1"
+  }
+}
