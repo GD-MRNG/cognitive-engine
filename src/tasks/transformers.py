@@ -109,11 +109,7 @@ class BatchLLMTask(PipelineTask):
 
             final_prompt = prompt_template.format(content=content)
 
-            try:
-                llm_output = llm_client.query(final_prompt, model=model_name)
-            except Exception as e:
-                logger.error(f"LLM failure for {original_source}: {e}")
-                llm_output = f"[Error processing {original_source}]"
+            llm_output = llm_client.query(final_prompt, model=model_name)
 
             metadata_section = (
                 f"## Metadata\n"
@@ -222,21 +218,17 @@ class LLMEnrichmentTask(PipelineTask):
 
             merged_context = "\n\n".join(combined_parts)
 
-            try:
-                final_prompt = prompt_template.format(content=merged_context)
+            final_prompt = prompt_template.format(content=merged_context)
 
-                response = llm_client.query(final_prompt, model=model_name)
+            response = llm_client.query(final_prompt, model=model_name)
 
-                cleaned_response = self._post_process_response(response)
+            cleaned_response = self._post_process_response(response)
 
-                item[output_key] = cleaned_response
-                updated = True
+            item[output_key] = cleaned_response
+            updated = True
 
-                artifact[target_key] = items
-                CheckpointManager.save(checkpoint_file, artifact)
-
-            except Exception as e:
-                logger.error(f"LLM Enrichment failed for {item.get('url')}: {e}")
+            artifact[target_key] = items
+            CheckpointManager.save(checkpoint_file, artifact)
 
         if updated:
             context.set(target_key, items)

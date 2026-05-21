@@ -30,7 +30,6 @@ class MockLLMClient(BaseLLMClient):
 class ProductionLLMClient(BaseLLMClient):
     DEFAULT_POE_MODEL = "gemini-3-flash"
     DEFAULT_OLLAMA_MODEL = "qwen2.5:14b"
-    DEFAULT_FALLBACK_MODEL = "deepseek-r1:8b"
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
@@ -38,10 +37,6 @@ class ProductionLLMClient(BaseLLMClient):
 
         self.max_retries = config.get("max_retries", 2)
         self.base_delay = config.get("retry_delay", 2)
-        self.fallback_enabled = config.get("fallback_enabled", True)
-
-        # Use class constant for fallback default
-        self.fallback_model = config.get("fallback_model", self.DEFAULT_FALLBACK_MODEL)
 
         # Block Patterns: Regexes to remove entire chunks (multiline)
         self.cleaning_block_patterns = [
@@ -71,44 +66,14 @@ class ProductionLLMClient(BaseLLMClient):
             pass
 
     def query(self, prompt: str, model: str = "default") -> str:
-        """
-        Orchestrates the query with:
-        1. Mandatory cooldown (Rate Limit protection).
-        2. Primary Provider attempt with Exponential Backoff.
-        3. Hot Fallback to Local LLM if Primary fails.
-        """
-
         time.sleep(1.0)  # Mandatory Cooldown
-
-        try:
-            return self._execute_with_retry(
-                provider_func=self._query_primary_provider,
-                prompt=prompt,
-                model=model,
-                retries=self.max_retries,
-                provider_name=self.provider,
-            )
-        except Exception as e:
-            logger.error(
-                f"Primary Provider ({self.provider}) failed after retries: {e}"
-            )
-
-            if self.fallback_enabled and self.provider != "ollama":
-                logger.warning(
-                    f"⚠️ Initiating Hot Fallback to Local Ollama ({self.fallback_model})..."
-                )
-                try:
-                    return self._execute_with_retry(
-                        provider_func=self._query_ollama,
-                        prompt=prompt,
-                        model=self.fallback_model,
-                        retries=2,
-                        provider_name="ollama-fallback",
-                    )
-                except Exception as fallback_error:
-                    logger.critical(f"Fallback failed: {fallback_error}")
-
-            return f"[Error: All LLM providers failed. Primary: {e}]"
+        return self._execute_with_retry(
+            provider_func=self._query_primary_provider,
+            prompt=prompt,
+            model=model,
+            retries=self.max_retries,
+            provider_name=self.provider,
+        )
 
     def _execute_with_retry(self, provider_func, prompt, model, retries, provider_name):
         last_exception = None
