@@ -134,8 +134,10 @@ class BatchLLMTask(PipelineTask):
                 processed_content += f"\n\n---\n\n## Original Content\n\n{content}"
 
             if save_intermediate:
+                # Remove file extension from original_source
+                source_without_ext = os.path.splitext(original_source)[0]
                 safe_base = "".join(
-                    c for c in original_source if c.isalnum() or c in ("_", "-")
+                    c for c in source_without_ext if c.isalnum() or c in ("_", "-")
                 ).strip()
                 out_path = os.path.join(output_dir, f"{safe_base}{suffix}.md")
                 FileManager.save_text(out_path, processed_content)
