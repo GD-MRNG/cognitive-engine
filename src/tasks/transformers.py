@@ -1,4 +1,5 @@
 import os
+import glob
 import logging
 import datetime
 from typing import Dict, Any
@@ -146,6 +147,123 @@ class BatchLLMTask(PipelineTask):
 
         context.set(output_key, results)
         return context
+
+
+@register_task("FileAnnotationTask")
+class FileAnnotationTask(PipelineTask):
+    """
+    Reads existing files from disk, runs an LLM on their content,
+    and modifies each file in-place by prepending or appending the LLM output.
+
+    Primary input: context items from UrlListLoader (url field = file path).
+    Also accepts file_paths list or input_dir + file_glob for direct config use.
+    """
+
+    def execute(
+        self, context: WorkflowContext, config: Dict[str, Any]
+    ) -> WorkflowContext:
+        input_key = config.get("input_key")
+        file_paths = config.get("file_paths", [])
+        input_dir = config.get("input_dir")
+        file_glob = config.get("file_glob", "*.md")
+        output_key = config.get("output_key")
+        prompt_file = config.get("prompt_file")
+        model_name = config.get("model", "default")
+        mode = config.get("mode", "prepend")
+
+        if not prompt_file:
+            raise ValueError("FileAnnotationTask requires 'prompt_file'.")
+        if mode not in ("prepend", "append"):
+            raise ValueError(
+                f"FileAnnotationTask: 'mode' must be 'prepend' or 'append', got '{mode}'."
+            )
+        if not os.path.exists(prompt_file):
+            raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
+
+        with open(prompt_file, encoding="utf-8") as f:
+            prompt_template = f.read()
+
+        files = self._collect_files(context, input_key, file_paths, input_dir, file_glob)
+
+        if not files:
+            logger.warning("FileAnnotationTask: No files found to process.")
+            if output_key:
+                context.set(output_key, [])
+            return context
+
+        llm_client = get_llm_client(config)
+        annotated_paths = []
+        logger.info(f"FileAnnotationTask: Processing {len(files)} files (mode='{mode}')...")
+
+        for filepath in files:
+            try:
+                with open(filepath, encoding="utf-8") as f:
+                    content = f.read()
+                llm_output = llm_client.query(
+                    prompt_template.format(content=content), model=model_name
+                )
+                self._modify_file(filepath, llm_output, mode)
+                annotated_paths.append(filepath)
+                logger.info(f"  Annotated: {os.path.basename(filepath)}")
+            except Exception as e:
+                logger.error(f"FileAnnotationTask: Failed to process '{filepath}': {e}")
+
+        if output_key:
+            context.set(output_key, annotated_paths)
+
+        logger.info(
+            f"FileAnnotationTask: Done. {len(annotated_paths)}/{len(files)} files annotated."
+        )
+        return context
+
+    def _collect_files(self, context, input_key, file_paths, input_dir, file_glob):
+        paths = []
+
+        if input_key:
+            for item in context.get(input_key, []):
+                # UrlListLoader resolves local paths to absolute in 'url'
+                fp = item.get("url") or item.get("filepath") or item.get("file_path", "")
+                if fp and os.path.isfile(fp):
+                    paths.append(fp)
+
+        for fp in file_paths:
+            resolved = self.get_workspace_path(context, fp)
+            if os.path.isfile(resolved):
+                paths.append(resolved)
+
+        if input_dir:
+            resolved_dir = self.get_workspace_path(context, input_dir)
+            for fp in glob.glob(os.path.join(resolved_dir, file_glob)):
+                paths.append(fp)
+
+        seen, result = set(), []
+        for fp in paths:
+            if fp not in seen:
+                seen.add(fp)
+                result.append(fp)
+        return result
+
+    def _modify_file(self, filepath: str, llm_output: str, mode: str) -> None:
+        with open(filepath, encoding="utf-8") as f:
+            existing = f.read()
+
+        stripped = existing.strip()
+
+        if mode == "prepend":
+            first_line = stripped.split("\n")[0].strip() if stripped else ""
+            if first_line == "---":
+                new_content = f"{llm_output}\n\n{existing}"
+            else:
+                new_content = f"{llm_output}\n\n---\n\n{existing}"
+        else:  # append
+            last_line = stripped.split("\n")[-1].strip() if stripped else ""
+            if last_line == "---":
+                new_content = f"{existing}\n\n{llm_output}"
+            else:
+                new_content = f"{existing}\n\n---\n\n{llm_output}"
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(new_content)
 
 
 class LLMEnrichmentTask(PipelineTask):
