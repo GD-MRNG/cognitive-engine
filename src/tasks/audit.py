@@ -31,13 +31,13 @@ def _build_section_a(items: list, input_fields: list) -> str:
 
 
 def _build_section_b(items: list, workload_fields: list) -> str:
-    total = len(items)
     lines = [
         "### B. Processing Workload\n",
         "| field | total items | completed | pending |",
         "|-------|-------------|-----------|---------|",
     ]
     for field in workload_fields:
+        total = sum(1 for item in items if field in item)
         completed = sum(1 for item in items if item.get(field))
         pending = total - completed
         lines.append(f"| {field} | {total} | {completed} | {pending} |")
@@ -49,10 +49,12 @@ def _build_section_c(items: list, quality_fields: dict) -> str:
     lines = ["### C. Output Quality\n"]
     for field, thresholds in quality_fields.items():
         min_chars = thresholds.get("min_chars", 0)
-        total = len(items)
+        total = sum(1 for item in items if field in item)
         missing, too_short, flagged = [], [], []
 
         for item in items:
+            if field not in item:
+                continue
             value = item.get(field)
             title = item.get("title") or "no title"
             source = item.get("source") or "no source"
@@ -68,6 +70,7 @@ def _build_section_c(items: list, quality_fields: dict) -> str:
         lines.append(f"**{field}** (min {min_chars} chars)")
         lines.append("| status | count | % |")
         lines.append("|--------|-------|---|")
+        lines.append(f"| TOTAL | {total} | 100% |")
         lines.append(f"| PASS | {pass_count} | {pass_count * 100 // total}% |")
         lines.append(f"| TOO_SHORT | {len(too_short)} | {len(too_short) * 100 // total}% |")
         lines.append(f"| MISSING | {len(missing)} | {len(missing) * 100 // total}% |")
