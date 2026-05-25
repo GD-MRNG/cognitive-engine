@@ -115,6 +115,18 @@ def _build_section_d(workspace_dir: str, error_summary_prompt_file: str, config:
     )
 
 
+def _build_section_e(combined_sections: str, audit_report_prompt_file: str, config: dict) -> str:
+    if not os.path.exists(audit_report_prompt_file):
+        raise FileNotFoundError(f"Audit report prompt not found: {audit_report_prompt_file}")
+    with open(audit_report_prompt_file, encoding="utf-8") as f:
+        template = f.read()
+
+    model_name = config.get("model", "default")
+    llm_client = get_llm_client(config)
+    report = llm_client.query(template.format(content=combined_sections), model=model_name)
+    return f"### E. Audit Report\n\n{report}\n"
+
+
 @register_task("PipelineAuditTask")
 class PipelineAuditTask(PipelineTask):
     def execute(self, context: WorkflowContext, config: Dict[str, Any]) -> WorkflowContext:
@@ -124,6 +136,7 @@ class PipelineAuditTask(PipelineTask):
         workload_fields = config.get("workload_fields", [])
         quality_fields = config.get("quality_fields", {})
         error_summary_prompt_file = config.get("error_summary_prompt_file")
+        audit_report_prompt_file = config.get("audit_report_prompt_file")
         report_suffix = config.get("report_suffix", "Audit-Report")
         output_dir = config.get("output_dir", "reports")
         force_refresh = config.get("force_refresh", False)
@@ -170,7 +183,23 @@ class PipelineAuditTask(PipelineTask):
             logger.info("Section D complete.")
 
         combined = "\n\n".join(sections)
-        if combined:
-            logger.info("=== Audit Output ===\n" + combined)
+
+        if audit_report_prompt_file:
+            section_e = _build_section_e(combined, audit_report_prompt_file, config)
+            sections.append(section_e)
+            logger.info("Section E complete.")
+
+        full_report = "\n\n".join(sections)
+
+        os.makedirs(os.path.dirname(report_path), exist_ok=True)
+        with open(report_path, "w", encoding="utf-8") as f:
+            header = (
+                f"# Pipeline Audit Report\n\n"
+                f"- **Date:** {date_str}\n"
+                f"- **Checkpoint:** {checkpoint_file}\n"
+                f"- **Items audited:** {len(items)}\n\n---\n\n"
+            )
+            f.write(header + full_report)
+        logger.info(f"Audit report written to: {report_path}")
 
         return context
