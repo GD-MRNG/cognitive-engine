@@ -18,6 +18,7 @@ import src.tasks.utilities  # noqa: F401
 import src.tasks.notifications  # noqa: F401
 import src.tasks.synthesis  # noqa: F401
 import src.tasks.delivery  # noqa: F401
+import src.tasks.audit  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
