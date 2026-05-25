@@ -44,6 +44,49 @@ def _build_section_b(items: list, workload_fields: list) -> str:
     return "\n".join(lines)
 
 
+def _build_section_c(items: list, quality_fields: dict) -> str:
+    lines = ["### C. Output Quality\n"]
+    for field, thresholds in quality_fields.items():
+        min_chars = thresholds.get("min_chars", 0)
+        total = len(items)
+        missing, too_short, flagged = [], [], []
+
+        for item in items:
+            value = item.get(field)
+            title = item.get("title") or "no title"
+            source = item.get("source") or "no source"
+            url = item.get("url") or "no url"
+            identity = f"{title} - {source} - {url}"
+            if not value:
+                missing.append(identity)
+            elif len(value) < min_chars:
+                too_short.append((identity, len(value)))
+
+        pass_count = total - len(missing) - len(too_short)
+
+        lines.append(f"**{field}** (min {min_chars} chars)")
+        lines.append("| status | count | % |")
+        lines.append("|--------|-------|---|")
+        lines.append(f"| PASS | {pass_count} | {pass_count * 100 // total}% |")
+        lines.append(f"| TOO_SHORT | {len(too_short)} | {len(too_short) * 100 // total}% |")
+        lines.append(f"| MISSING | {len(missing)} | {len(missing) * 100 // total}% |")
+
+        if too_short or missing:
+            flagged_lines = []
+            for identity, char_count in too_short:
+                flagged_lines.append(f'- [TOO_SHORT] "{identity}" — {char_count} chars')
+            for identity in missing:
+                flagged_lines.append(f'- [MISSING]   "{identity}"')
+            lines.append(
+                "\n<details>\n<summary>Flagged items ({} total)</summary>\n\n{}\n</details>".format(
+                    len(too_short) + len(missing), "\n".join(flagged_lines)
+                )
+            )
+
+        lines.append("")
+    return "\n".join(lines)
+
+
 @register_task("PipelineAuditTask")
 class PipelineAuditTask(PipelineTask):
     def execute(self, context: WorkflowContext, config: Dict[str, Any]) -> WorkflowContext:
@@ -51,6 +94,7 @@ class PipelineAuditTask(PipelineTask):
         target_key = config.get("target_key", "research_data")
         input_fields = config.get("input_fields", [])
         workload_fields = config.get("workload_fields", [])
+        quality_fields = config.get("quality_fields", {})
         report_suffix = config.get("report_suffix", "Audit-Report")
         output_dir = config.get("output_dir", "reports")
         force_refresh = config.get("force_refresh", False)
@@ -86,6 +130,10 @@ class PipelineAuditTask(PipelineTask):
         if workload_fields:
             sections.append(_build_section_b(items, workload_fields))
             logger.info("Section B complete.")
+
+        if quality_fields:
+            sections.append(_build_section_c(items, quality_fields))
+            logger.info("Section C complete.")
 
         combined = "\n\n".join(sections)
         if combined:
