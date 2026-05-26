@@ -96,6 +96,8 @@ class BatchLLMTask(PipelineTask):
         with open(prompt_file, encoding="utf-8") as f:
             prompt_template = f.read()
 
+        initial_context_file = config.get("initial_context_file")
+
         llm_client = get_llm_client(config)
         results = []
 
@@ -105,6 +107,11 @@ class BatchLLMTask(PipelineTask):
 
         current_date = datetime.datetime.now().strftime("%d-%m-%Y")
         previous_output = ""
+        if initial_context_file:
+            if not os.path.exists(initial_context_file):
+                raise FileNotFoundError(f"initial_context_file not found: {initial_context_file}")
+            with open(initial_context_file, encoding="utf-8") as f:
+                previous_output = f.read()
 
         for item in inputs:
             original_source = item.get("source", "unknown_source")
