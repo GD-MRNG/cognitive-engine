@@ -177,6 +177,7 @@ class FileAnnotationTask(PipelineTask):
         prompt_file = config.get("prompt_file")
         model_name = config.get("model", "default")
         mode = config.get("mode", "prepend")
+        annotation_title = config.get("annotation_title", "Annotation")
 
         if not prompt_file:
             raise ValueError("FileAnnotationTask requires 'prompt_file'.")
@@ -209,7 +210,7 @@ class FileAnnotationTask(PipelineTask):
                 llm_output = llm_client.query(
                     prompt_template.format(content=content), model=model_name
                 )
-                self._modify_file(filepath, llm_output, mode)
+                self._modify_file(filepath, llm_output, mode, annotation_title)
                 annotated_paths.append(filepath)
                 logger.info(f"  Annotated: {os.path.basename(filepath)}")
             except Exception as e:
@@ -250,24 +251,19 @@ class FileAnnotationTask(PipelineTask):
                 result.append(fp)
         return result
 
-    def _modify_file(self, filepath: str, llm_output: str, mode: str) -> None:
+    def _make_dropdown(self, title: str, body: str) -> str:
+        return f"<details>\n<summary>{title}</summary>\n\n{body.strip()}\n\n</details>"
+
+    def _modify_file(self, filepath: str, llm_output: str, mode: str, title: str) -> None:
         with open(filepath, encoding="utf-8") as f:
             existing = f.read()
 
-        stripped = existing.strip()
+        dropdown = self._make_dropdown(title, llm_output)
 
         if mode == "prepend":
-            first_line = stripped.split("\n")[0].strip() if stripped else ""
-            if first_line == "---":
-                new_content = f"{llm_output}\n\n{existing}"
-            else:
-                new_content = f"{llm_output}\n\n---\n\n{existing}"
+            new_content = f"{dropdown}\n\n{existing}"
         else:  # append
-            last_line = stripped.split("\n")[-1].strip() if stripped else ""
-            if last_line == "---":
-                new_content = f"{existing}\n\n{llm_output}"
-            else:
-                new_content = f"{existing}\n\n---\n\n{llm_output}"
+            new_content = f"{existing}\n\n{dropdown}"
 
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(new_content)
