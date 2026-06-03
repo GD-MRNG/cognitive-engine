@@ -217,3 +217,50 @@ class ReportGenerationTask(PipelineTask):
             raise e
 
         return context
+
+
+@register_task("ShareSummaryTask")
+class ShareSummaryTask(PipelineTask):
+    """
+    Generates a ~100-word share summary from the Global Executive Summary.
+    Stores result as intelligence["Share_Summary"] in the checkpoint.
+    """
+
+    def execute(
+        self, context: WorkflowContext, config: Dict[str, Any]
+    ) -> WorkflowContext:
+        checkpoint_file = self.get_workspace_path(
+            context, config.get("checkpoint_file", "research.json")
+        )
+        prompt_file = config.get("prompt_file")
+        force_refresh = config.get("force_refresh", False)
+
+        artifact = CheckpointManager.load(checkpoint_file)
+        intelligence = artifact.get("intelligence", {})
+
+        if not force_refresh and intelligence.get("Share_Summary"):
+            logger.info("ShareSummaryTask: Share_Summary exists. Skipping LLM call.")
+            return context
+
+        source_text = intelligence.get("Global_Executive_Summary", "")
+        if not source_text:
+            logger.warning(
+                "ShareSummaryTask: Global_Executive_Summary is empty. Skipping."
+            )
+            return context
+
+        with open(prompt_file, encoding="utf-8") as f:
+            prompt_template = f.read()
+
+        prompt = prompt_template.format(content=source_text)
+
+        llm_client = get_llm_client(config)
+        logger.info("ShareSummaryTask: Generating Share_Summary...")
+        result = llm_client.query(prompt, model=config.get("model"))
+
+        intelligence["Share_Summary"] = result
+        artifact["intelligence"] = intelligence
+        CheckpointManager.save(checkpoint_file, artifact)
+
+        logger.info("ShareSummaryTask: Share_Summary saved to checkpoint.")
+        return context
