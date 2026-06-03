@@ -11,6 +11,8 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
+StealthyFetcher.configure(auto_match=False)
+
 MIN_CONTENT_CHARS = 500  # below this threshold, content is likely a bot-challenge page
 
 _BOT_CHALLENGE_TITLES = (
@@ -31,7 +33,6 @@ def _is_bot_challenge_title(title: str) -> bool:
 def _scrapling_fetch_html(url: str) -> str:
     """Fetch raw HTML via StealthyFetcher (stealth Playwright). Returns empty string on failure."""
     try:
-        StealthyFetcher.configure(auto_match=False)
         fetcher = StealthyFetcher()
         page = fetcher.fetch(url, headless=True, network_idle=True)
         return page.html_content or ""
@@ -196,7 +197,7 @@ class WebPageExtractor:
         driver = self.manager.get_driver()
         content = _parse_content(driver.page_source)
 
-        if not content:
+        if len(content) < MIN_CONTENT_CHARS:
             logger.error(f"Extraction failed. No content found for {url}")
             raise RuntimeError(f"Failed to extract meaningful content from {url}")
 
