@@ -1,5 +1,6 @@
 import logging
 import atexit
+from scrapling.fetchers import StealthyFetcher
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
@@ -30,8 +31,6 @@ def _is_bot_challenge_title(title: str) -> bool:
 def _scrapling_fetch_html(url: str) -> str:
     """Fetch raw HTML via StealthyFetcher (stealth Playwright). Returns empty string on failure."""
     try:
-        from scrapling.fetchers import StealthyFetcher
-
         StealthyFetcher.configure(auto_match=False)
         fetcher = StealthyFetcher()
         page = fetcher.fetch(url, headless=True, network_idle=True)
