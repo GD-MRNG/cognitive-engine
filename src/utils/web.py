@@ -10,6 +10,59 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
+MIN_CONTENT_CHARS = 500  # below this threshold, content is likely a bot-challenge page
+
+_BOT_CHALLENGE_TITLES = (
+    "just a moment",
+    "access denied",
+    "403 forbidden",
+    "attention required",
+    "please wait",
+    "checking your browser",
+    "enable javascript",
+)
+
+
+def _is_bot_challenge_title(title: str) -> bool:
+    return any(p in title.lower() for p in _BOT_CHALLENGE_TITLES)
+
+
+def _scrapling_fetch_html(url: str) -> str:
+    """Fetch raw HTML via StealthyFetcher (stealth Playwright). Returns empty string on failure."""
+    try:
+        from scrapling.fetchers import StealthyFetcher
+
+        StealthyFetcher.configure(auto_match=False)
+        fetcher = StealthyFetcher()
+        page = fetcher.fetch(url, headless=True, network_idle=True)
+        return page.html_content or ""
+    except Exception as e:
+        logger.warning(f"Scrapling fetch failed for {url}: {e}")
+        return ""
+
+
+def _parse_content(html: str) -> str:
+    """Extract plain text from HTML using the standard junk-tag removal pipeline."""
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["nav", "footer", "header", "aside", "script", "style", "noscript", "form"]):
+        tag.decompose()
+    return soup.get_text(separator="\n", strip=True)
+
+
+def _parse_title(html: str) -> str:
+    """Extract best title from HTML: OG tag > <title> > H1."""
+    soup = BeautifulSoup(html, "html.parser")
+    og = soup.find("meta", property="og:title")
+    if og and og.get("content"):
+        return og["content"].strip()
+    title_tag = soup.find("title")
+    if title_tag and title_tag.get_text(strip=True):
+        return title_tag.get_text(strip=True)
+    h1 = soup.find("h1")
+    if h1:
+        return h1.get_text(strip=True)
+    return ""
+
 
 class WebDriverManager:
     """
@@ -120,60 +173,79 @@ class WebPageExtractor:
 
     def get_webpage_content(self, url: str) -> str:
         """
-        Extracts main content text using BeautifulSoup.
-        Raises RuntimeError if content is empty.
+        Extracts main content text. Tries Scrapling (stealth Playwright) first;
+        falls back to Selenium if the result is below MIN_CONTENT_CHARS.
+        Raises RuntimeError if both fetchers fail to return sufficient content.
         """
         logger.info(f"Starting content extraction for: {url}")
+
+        # Primary: Scrapling
+        html = _scrapling_fetch_html(url)
+        if html:
+            content = _parse_content(html)
+            if len(content) >= MIN_CONTENT_CHARS:
+                logger.info(f"Scrapling extracted {len(content)} chars from {url}")
+                return content
+            logger.warning(
+                f"Scrapling returned only {len(content)} chars for {url} "
+                f"(threshold: {MIN_CONTENT_CHARS}) — falling back to Selenium"
+            )
+
+        # Fallback: Selenium
+        logger.info(f"Selenium fallback for content: {url}")
         self._ensure_page_loaded(url)
         driver = self.manager.get_driver()
-        page_source = driver.page_source
-
-        soup = BeautifulSoup(page_source, "html.parser")
-
-        # Remove obvious junk tags
-        # nav: menus | footer: bottom links | aside: sidebars | script/style: code
-        for tag in soup(
-            ["nav", "footer", "header", "aside", "script", "style", "noscript", "form"]
-        ):
-            tag.decompose()
-
-        content = soup.get_text(separator="\n", strip=True)
+        content = _parse_content(driver.page_source)
 
         if not content:
             logger.error(f"Extraction failed. No content found for {url}")
             raise RuntimeError(f"Failed to extract meaningful content from {url}")
 
-        logger.info(f"Successfully extracted {len(content)} characters from {url}")
+        logger.info(f"Selenium extracted {len(content)} characters from {url}")
         return content
 
     def get_webpage_title(self, url: str) -> str:
         """
         Extracts the best possible title (OG Tag > Title Tag > H1).
+        Tries Scrapling first; falls back to Selenium if the result is empty
+        or matches a known bot-challenge pattern (e.g. "Just a moment...").
         Raises RuntimeError if no title is found.
         """
         logger.info(f"Starting title extraction for: {url}")
+
+        # Primary: Scrapling
+        html = _scrapling_fetch_html(url)
+        if html:
+            title = _parse_title(html)
+            if title and not _is_bot_challenge_title(title):
+                logger.info(f"Scrapling found title: {title}")
+                return title
+            if title:
+                logger.warning(f"Scrapling returned bot-challenge title '{title}' for {url} — falling back to Selenium")
+            else:
+                logger.warning(f"Scrapling returned no title for {url} — falling back to Selenium")
+
+        # Fallback: Selenium
+        logger.info(f"Selenium fallback for title: {url}")
         self._ensure_page_loaded(url)
         driver = self.manager.get_driver()
         soup = BeautifulSoup(driver.page_source, "html.parser")
 
-        # Priority 1: OpenGraph
         og_title = soup.find("meta", property="og:title")
         if og_title and og_title.get("content"):
             title = og_title["content"].strip()
-            logger.info(f"Found OpenGraph title: {title}")
+            logger.info(f"Selenium found OpenGraph title: {title}")
             return title
 
-        # Priority 2: Standard Title
         if driver.title and driver.title.strip():
             title = driver.title.strip()
-            logger.info(f"Found standard page title: {title}")
+            logger.info(f"Selenium found standard page title: {title}")
             return title
 
-        # Priority 3: H1
         h1 = soup.find("h1")
         if h1:
             title = h1.get_text(strip=True)
-            logger.info(f"Found H1 title: {title}")
+            logger.info(f"Selenium found H1 title: {title}")
             return title
 
         logger.error(f"Title extraction failed for {url}")
